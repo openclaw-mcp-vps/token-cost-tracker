@@ -1,0 +1,48 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model UsageRecord {
+  id             String   @id @default(cuid())
+  date           DateTime
+  provider       String
+  model          String
+  workflow       String
+  agent          String
+  inputTokens    Int
+  outputTokens   Int
+  cachedTokens   Int      @default(0)
+  totalTokens    Int
+  estimatedCost  Float
+  createdAt      DateTime @default(now())
+
+  @@index([date])
+  @@index([provider])
+  @@index([agent])
+}
+
+model Budget {
+  id                 String   @id @default(cuid())
+  agent              String   @unique
+  monthlyBudgetUsd   Float
+  discordWebhookUrl  String?
+  notifyOnExceedOnly Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Subscription {
+  id               String   @id @default(cuid())
+  lemonOrderId     String   @unique
+  customerEmail    String
+  status           String
+  activationCode   String   @unique
+  activatedAt      DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
