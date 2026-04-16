@@ -2,24 +2,38 @@
 
 :root {
   --background: #0d1117;
-  --foreground: #e6edf3;
+  --surface: #161b22;
+  --surface-muted: #21262d;
+  --text: #e6edf3;
+  --text-muted: #9da7b3;
+  --border: #30363d;
+  --accent: #2f81f7;
+  --accent-strong: #1f6feb;
+  --danger: #f85149;
 }
 
-html,
+* {
+  border-color: var(--border);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  min-height: 100%;
+  background: radial-gradient(circle at top right, #0f1a2b 0%, #0d1117 40%), var(--background);
+  color: var(--text);
+  min-height: 100vh;
 }
 
-body {
-  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+.container-shell {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 1.25rem;
 }
 
-.grid-ambient {
-  background-image: radial-gradient(circle at 20% 20%, rgba(16, 185, 129, 0.15), transparent 32%),
-    radial-gradient(circle at 80% 0%, rgba(6, 182, 212, 0.12), transparent 26%),
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-  background-size: auto, auto, 44px 44px, 44px 44px;
+.card-surface {
+  background: linear-gradient(180deg, rgba(33, 38, 45, 0.95), rgba(22, 27, 34, 0.95));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.text-muted {
+  color: var(--text-muted);
 }

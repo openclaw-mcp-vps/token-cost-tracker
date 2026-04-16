@@ -1,35 +1,32 @@
-import { NextResponse } from 'next/server';
-import { z } from 'zod';
-
-import { sendDiscordBudgetAlert } from '@/lib/discord';
-
-const bodySchema = z.object({
-  agent: z.string().min(1),
-  monthlySpend: z.number().nonnegative(),
-  monthlyBudget: z.number().nonnegative(),
-  webhookUrl: z.string().url().optional(),
-});
+import { NextResponse } from "next/server";
+import { asCurrency } from "@/lib/format";
+import { getDashboardMetrics } from "@/lib/usage";
 
 export async function POST(request: Request) {
-  try {
-    const json = await request.json();
-    const parsed = bodySchema.parse(json);
+  const metrics = await getDashboardMetrics();
+  const flagged = metrics.agentRows.filter((r) => r.overBudget || r.budgetUsedPct >= 80).slice(0, 8);
 
-    const webhookUrl = parsed.webhookUrl ?? process.env.DISCORD_WEBHOOK_URL;
-    if (!webhookUrl) {
-      return NextResponse.json({ error: 'No webhook URL configured' }, { status: 400 });
-    }
-
-    await sendDiscordBudgetAlert({
-      webhookUrl,
-      agent: parsed.agent,
-      monthlySpend: parsed.monthlySpend,
-      monthlyBudget: parsed.monthlyBudget,
-    });
-
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to send Discord alert';
-    return NextResponse.json({ error: message }, { status: 500 });
+  if (flagged.length === 0) {
+    return NextResponse.redirect(new URL("/dashboard?alert=none", request.url));
   }
+
+  const webhookUrl = process.env.DISCORD_ALERT_WEBHOOK_URL;
+  if (!webhookUrl) {
+    return NextResponse.redirect(new URL("/dashboard?alert=missing-webhook", request.url));
+  }
+
+  const lines = flagged.map(
+    (f) => `• **${f.agentName}** (${f.provider}/${f.model}) — ${Math.round(f.budgetUsedPct)}% used, ${asCurrency(f.totalCostUsd)} of ${asCurrency(f.monthlyBudgetUsd)} (${f.workflow})`,
+  );
+
+  await fetch(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: "Token Cost Tracker",
+      content: `Budget threshold reached:\n${lines.join("\n")}`,
+    }),
+  });
+
+  return NextResponse.redirect(new URL("/dashboard?alert=sent", request.url));
 }

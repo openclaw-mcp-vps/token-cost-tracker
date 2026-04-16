@@ -2,6 +2,6 @@ node_modules
 .next
 .env
 .env.local
-.env.production
-.prisma
 *.log
+data/*.json
+!data/.gitkeep

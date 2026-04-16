@@ -11,7 +11,7 @@ NICHE: ai-agent-tools
 PRICE: $$19/mo
 
 ARCHITECTURE SPEC:
-A Next.js dashboard that connects to multiple AI provider APIs to track token usage per agent/workflow. Features a React frontend with real-time cost monitoring, budget alerts via Discord webhooks, and Lemon Squeezy subscription management.
+A Next.js dashboard that connects to multiple AI provider APIs to track token usage per agent/workflow. Features real-time cost monitoring, budget alerts via Discord webhooks, and detailed breakdowns by provider, model, and time period.
 
 PLANNED FILES:
 - app/page.tsx
@@ -20,17 +20,22 @@ PLANNED FILES:
 - app/api/providers/anthropic/route.ts
 - app/api/providers/google/route.ts
 - app/api/providers/moltbook/route.ts
-- app/api/webhooks/lemonsqueezy/route.ts
+- app/api/usage/sync/route.ts
 - app/api/alerts/discord/route.ts
-- components/CostChart.tsx
-- components/AgentTable.tsx
-- components/BudgetAlerts.tsx
-- lib/database.ts
-- lib/providers.ts
-- lib/discord.ts
-- prisma/schema.prisma
+- app/api/webhooks/lemonsqueezy/route.ts
+- components/dashboard/CostChart.tsx
+- components/dashboard/AgentTable.tsx
+- components/dashboard/BudgetAlerts.tsx
+- components/providers/ApiKeyForm.tsx
+- lib/providers/openai.ts
+- lib/providers/anthropic.ts
+- lib/providers/google.ts
+- lib/providers/moltbook.ts
+- lib/database/schema.ts
+- lib/auth.ts
+- lib/lemonsqueezy.ts
 
-DEPENDENCIES: next, react, typescript, tailwindcss, prisma, @prisma/client, recharts, axios, @lemonsqueezy/lemonsqueezy.js, discord.js, zod, date-fns, lucide-react
+DEPENDENCIES: next, tailwindcss, prisma, @prisma/client, next-auth, @lemonsqueezy/lemonsqueezy.js, recharts, openai, @anthropic-ai/sdk, @google/generative-ai, discord.js, zod, date-fns, lucide-react
 
 REQUIREMENTS:
 - Next.js 15 with App Router (app/ directory)
@@ -44,6 +49,7 @@ REQUIREMENTS:
 - Mobile responsive
 - SEO meta tags, Open Graph tags
 - /api/health endpoint that returns {"status":"ok"}
+- NO HEAVY ORMs: Do NOT use Prisma, Drizzle, TypeORM, Sequelize, or Mongoose. If the tool needs persistence, use direct SQL via `pg` (Postgres) or `better-sqlite3` (local), or just filesystem JSON. Reason: these ORMs require schema files and codegen steps that fail on Vercel when misconfigured.
 - DEPENDENCY DISCIPLINE: Every package imported in any .ts, .tsx, .js, or .jsx file MUST be
   listed in package.json dependencies (or devDependencies for build-only). Before finishing,
   scan all source files for `import` statements and verify every external package (anything

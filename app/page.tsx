@@ -1,169 +1,152 @@
-import Link from 'next/link';
-import { BarChart3, BellRing, BrainCircuit, ShieldAlert } from 'lucide-react';
+import Link from "next/link";
+import Script from "next/script";
+import { CheckCircle2, ShieldAlert, Wallet, Workflow } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { getCheckoutUrl } from "@/lib/lemonsqueezy";
+import { hasDashboardAccess } from "@/lib/auth";
 
-import { CheckoutPanel } from '@/components/CheckoutPanel';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+interface LandingProps {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}
 
-const faq = [
-  {
-    question: 'How is this different from provider dashboards?',
-    answer:
-      'Provider dashboards show totals per account. Token Cost Tracker attributes usage per agent and workflow so you can identify which automation is actually creating spend.',
-  },
-  {
-    question: 'Do I need to move my agents to use this?',
-    answer:
-      'No. Connect your existing API keys and pull yesterday\'s usage across providers. The dashboard normalizes cost and token metrics in one place.',
-  },
-  {
-    question: 'How do budget alerts work?',
-    answer:
-      'Set monthly budgets per agent. When a single agent exceeds its budget, a Discord webhook alert is sent with spend, budget, and overage amount.',
-  },
-  {
-    question: 'Who is this built for?',
-    answer:
-      'Solo developers and small teams running several AI agents in production, especially Claude Code users, MCP builders, and workflow automation teams.',
-  },
-];
+export default async function LandingPage({ searchParams }: LandingProps) {
+  const params = (await searchParams) ?? {};
+  const unlock = typeof params.unlock === "string" ? params.unlock : "";
+  const unlocked = await hasDashboardAccess();
 
-export default function HomePage() {
   return (
-    <main className="grid-ambient">
-      <section className="mx-auto max-w-6xl px-4 pb-14 pt-16 sm:px-6 sm:pt-20">
-        <div className="max-w-3xl space-y-6">
-          <p className="text-sm font-medium uppercase tracking-[0.18em] text-emerald-300">AI Agent Cost Intelligence</p>
-          <h1 className="text-4xl font-semibold leading-tight text-white sm:text-5xl">
-            See exactly what each AI agent cost you yesterday, broken down by provider, model, and workflow.
-          </h1>
-          <p className="text-lg leading-relaxed text-slate-300">
-            Most teams discover silent overages too late. Token Cost Tracker gives you per-agent attribution across OpenAI,
-            Anthropic, Google, and Moltbook, then warns you when one workflow starts burning your monthly budget.
-          </p>
-          <div className="flex flex-wrap items-center gap-4">
-            <Link
-              href="#pricing"
-              className="rounded-md bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-slate-950 hover:bg-emerald-300"
-            >
-              Start Tracking for $19/mo
-            </Link>
-            <Link href="/dashboard" className="rounded-md border border-slate-700 px-5 py-2.5 text-sm font-semibold hover:bg-slate-800">
-              View Product Preview
-            </Link>
+    <main>
+      <Script src="https://app.lemonsqueezy.com/js/lemon.js" strategy="afterInteractive" />
+      <section className="container-shell py-16 md:py-24">
+        <div className="grid md:grid-cols-2 gap-10 items-center">
+          <div>
+            <p className="text-sm uppercase tracking-[0.2em] text-[#80b5ff]">ai-agent-tools</p>
+            <h1 className="mt-3 text-4xl md:text-5xl font-bold leading-tight">
+              See exactly what each AI agent cost you yesterday.
+            </h1>
+            <p className="mt-5 text-lg text-muted leading-relaxed">
+              Token Cost Tracker gives you per-agent attribution across OpenAI, Anthropic, Google, and Moltbook so runaway workflows are visible before they hit four figures.
+            </p>
+            <div className="mt-7 flex flex-wrap gap-3">
+              <Button asChild size="lg">
+                <a className="lemonsqueezy-button" href={getCheckoutUrl()}>
+                  Start for $19/month
+                </a>
+              </Button>
+              <Button asChild variant="outline" size="lg">
+                <Link href={unlocked ? "/dashboard" : "#unlock"}>{unlocked ? "Open Dashboard" : "Unlock Existing Purchase"}</Link>
+              </Button>
+            </div>
+            {unlock === "not-found" && (
+              <p className="mt-4 text-sm text-[#ffaba8]">Purchase not found. Confirm email + order ID from your Lemon Squeezy receipt.</p>
+            )}
+            {unlock === "invalid" && (
+              <p className="mt-4 text-sm text-[#ffaba8]">Please enter a valid email and order ID.</p>
+            )}
           </div>
-        </div>
-      </section>
-
-      <section className="mx-auto grid max-w-6xl gap-5 px-4 pb-12 sm:grid-cols-2 sm:px-6 lg:grid-cols-4">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <BrainCircuit className="h-5 w-5 text-cyan-300" />
-              Per-Agent Attribution
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <CardDescription>Know which agent, workflow, and model generated every token and dollar.</CardDescription>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <BarChart3 className="h-5 w-5 text-emerald-300" />
-              Unified Cost Timeline
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <CardDescription>Track daily cost burn across all providers in one normalized dashboard.</CardDescription>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <ShieldAlert className="h-5 w-5 text-amber-300" />
-              Runaway Detection
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <CardDescription>Flag agents that cross their monthly budget before end-of-month surprises.</CardDescription>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <BellRing className="h-5 w-5 text-violet-300" />
-              Discord Alerts
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <CardDescription>Send actionable spend alerts to your ops channel when budgets are exceeded.</CardDescription>
-          </CardContent>
-        </Card>
-      </section>
-
-      <section className="mx-auto max-w-6xl px-4 pb-10 sm:px-6">
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8">
-          <h2 className="text-2xl font-semibold text-white">The Problem</h2>
-          <p className="mt-4 max-w-3xl text-slate-300">
-            AI agents can silently burn $500-$5000/month when there is no per-workflow attribution. Provider consoles show
-            account-level totals, but they do not answer the critical question: which production workflow is causing this spend?
-            Without that visibility, teams cut features blindly or discover cost spikes only after invoices hit.
-          </p>
-        </div>
-      </section>
-
-      <section className="mx-auto max-w-6xl px-4 pb-10 sm:px-6">
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-8">
-          <h2 className="text-2xl font-semibold text-white">The Solution</h2>
-          <p className="mt-4 max-w-3xl text-slate-300">
-            Token Cost Tracker ingests yesterday&apos;s usage from all connected providers, normalizes token pricing by model,
-            and maps spend to your real production agents and workflows. You can see 30-day trends, set per-agent budgets,
-            and send automatic Discord alerts the moment any agent crosses its monthly limit.
-          </p>
-        </div>
-      </section>
-
-      <section id="pricing" className="mx-auto max-w-6xl px-4 pb-16 sm:px-6">
-        <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
           <Card>
             <CardHeader>
-              <CardTitle className="text-2xl">Simple Pricing</CardTitle>
-              <CardDescription>One plan for teams that need real visibility and control.</CardDescription>
+              <CardTitle>What this catches immediately</CardTitle>
+              <CardDescription>Visibility your provider dashboards do not give you.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4 text-slate-300">
-              <p className="text-4xl font-semibold text-white">
-                $19<span className="text-base font-medium text-slate-400">/month</span>
-              </p>
-              <ul className="space-y-2 text-sm">
-                <li>Connect OpenAI, Anthropic, Google, and Moltbook usage feeds</li>
-                <li>Daily cost and token breakdowns per agent and workflow</li>
-                <li>Monthly budget thresholds with Discord alerts</li>
-                <li>30-day trend analysis for cost burn rate and model drift</li>
-              </ul>
-              <p className="text-sm text-slate-400">
-                Dashboard access is paywalled. Complete checkout and unlock from this page instantly.
-              </p>
+            <CardContent className="space-y-4 text-sm">
+              <div className="flex items-start gap-3">
+                <ShieldAlert className="h-5 w-5 mt-0.5 text-[#f2cc60]" />
+                <p>A single workflow suddenly switching to expensive models across one agent pool.</p>
+              </div>
+              <div className="flex items-start gap-3">
+                <Workflow className="h-5 w-5 mt-0.5 text-[#80b5ff]" />
+                <p>Which provider-model pair is driving today’s burn rate by workflow and agent.</p>
+              </div>
+              <div className="flex items-start gap-3">
+                <Wallet className="h-5 w-5 mt-0.5 text-[#56d364]" />
+                <p>When any agent crosses its monthly budget threshold with Discord alerts.</p>
+              </div>
             </CardContent>
           </Card>
-
-          <CheckoutPanel />
         </div>
       </section>
 
-      <section className="mx-auto max-w-6xl px-4 pb-20 sm:px-6">
-        <h2 className="text-2xl font-semibold text-white">FAQ</h2>
-        <div className="mt-6 grid gap-4 md:grid-cols-2">
-          {faq.map((item) => (
-            <Card key={item.question}>
+      <section className="container-shell py-12">
+        <div className="grid md:grid-cols-3 gap-5">
+          {[
+            {
+              title: "Problem",
+              body: "Provider consoles only show account totals. You cannot answer which production agent cost what.",
+            },
+            {
+              title: "Solution",
+              body: "Track per-agent, per-model, per-workflow token burn daily, with trend lines and hard budget thresholds.",
+            },
+            {
+              title: "Who it is for",
+              body: "Solo devs and lean teams shipping Claude Code, MCP servers, and custom agent workflows.",
+            },
+          ].map((item) => (
+            <Card key={item.title}>
               <CardHeader>
-                <CardTitle className="text-base">{item.question}</CardTitle>
+                <CardTitle>{item.title}</CardTitle>
               </CardHeader>
               <CardContent>
-                <CardDescription>{item.answer}</CardDescription>
+                <p className="text-sm text-muted leading-relaxed">{item.body}</p>
               </CardContent>
             </Card>
           ))}
         </div>
+      </section>
+
+      <section className="container-shell py-12" id="pricing">
+        <Card className="border-[#2f81f7]/50">
+          <CardHeader>
+            <CardTitle>Simple pricing</CardTitle>
+            <CardDescription>One plan, built for high-signal cost monitoring.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+              <div>
+                <p className="text-4xl font-bold">$19<span className="text-base text-muted">/month</span></p>
+                <ul className="mt-4 space-y-2 text-sm text-muted">
+                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-[#56d364]" />Unlimited agents and workflows</li>
+                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-[#56d364]" />Provider and model-level cost attribution</li>
+                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-[#56d364]" />Discord alerts for budget overruns</li>
+                </ul>
+              </div>
+              <Button asChild size="lg">
+                <a className="lemonsqueezy-button" href={getCheckoutUrl()}>Launch Checkout</a>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="container-shell py-12" id="unlock">
+        <Card>
+          <CardHeader>
+            <CardTitle>Unlock your dashboard after purchase</CardTitle>
+            <CardDescription>Enter the same email and order ID from your Lemon Squeezy receipt.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form action="/api/paywall/unlock" method="POST" className="grid md:grid-cols-3 gap-3">
+              <input name="email" required type="email" placeholder="you@company.com" className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" />
+              <input name="orderId" required type="text" placeholder="Order ID" className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" />
+              <Button type="submit">Unlock Access</Button>
+            </form>
+          </CardContent>
+        </Card>
+      </section>
+
+      <section className="container-shell py-12">
+        <Card>
+          <CardHeader>
+            <CardTitle>FAQ</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4 text-sm text-muted">
+            <p><strong className="text-[var(--text)]">Does this replace provider billing pages?</strong> No. It adds agent and workflow attribution across providers so you can act on cost drivers.</p>
+            <p><strong className="text-[var(--text)]">How do Discord alerts work?</strong> Configure a webhook URL and the dashboard sends a summary whenever an agent breaches threshold.</p>
+            <p><strong className="text-[var(--text)]">Can I start before wiring every provider?</strong> Yes. Connect providers incrementally and sync usage whenever keys are available.</p>
+          </CardContent>
+        </Card>
       </section>
     </main>
   );
