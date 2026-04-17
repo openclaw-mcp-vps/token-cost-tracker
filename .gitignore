@@ -1,7 +1,7 @@
 node_modules
 .next
+out
 .env
 .env.local
-*.log
-data/*.json
-!data/.gitkeep
+npm-debug.log*
+.DS_Store

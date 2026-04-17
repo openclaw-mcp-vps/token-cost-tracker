@@ -1,32 +1,40 @@
 import { NextResponse } from "next/server";
-import { asCurrency } from "@/lib/format";
-import { getDashboardMetrics } from "@/lib/usage";
+import { z } from "zod";
+import { getMonthlyAgentSpend } from "@/lib/database";
+import { sendDiscordBudgetAlert } from "@/lib/discord";
+
+const payloadSchema = z.object({
+  agentId: z.string().min(1),
+  monthlyBudgetUsd: z.number().positive()
+});
 
 export async function POST(request: Request) {
-  const metrics = await getDashboardMetrics();
-  const flagged = metrics.agentRows.filter((r) => r.overBudget || r.budgetUsedPct >= 80).slice(0, 8);
+  try {
+    const payload = payloadSchema.parse(await request.json());
 
-  if (flagged.length === 0) {
-    return NextResponse.redirect(new URL("/dashboard?alert=none", request.url));
+    const monthlySpend = await getMonthlyAgentSpend();
+    const agent = monthlySpend.find((entry) => entry.agent_id === payload.agentId);
+    const currentSpend = Number(agent?.total_cost_usd ?? 0);
+
+    if (currentSpend <= payload.monthlyBudgetUsd) {
+      return NextResponse.json({
+        message: `No alert sent. ${payload.agentId} is at $${currentSpend.toFixed(2)} of $${payload.monthlyBudgetUsd.toFixed(2)}.`
+      });
+    }
+
+    await sendDiscordBudgetAlert({
+      agentId: payload.agentId,
+      monthlySpendUsd: currentSpend,
+      monthlyBudgetUsd: payload.monthlyBudgetUsd
+    });
+
+    return NextResponse.json({
+      message: `Alert sent. ${payload.agentId} is at $${currentSpend.toFixed(2)} and over budget.`
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Invalid alert payload" },
+      { status: 400 }
+    );
   }
-
-  const webhookUrl = process.env.DISCORD_ALERT_WEBHOOK_URL;
-  if (!webhookUrl) {
-    return NextResponse.redirect(new URL("/dashboard?alert=missing-webhook", request.url));
-  }
-
-  const lines = flagged.map(
-    (f) => `• **${f.agentName}** (${f.provider}/${f.model}) — ${Math.round(f.budgetUsedPct)}% used, ${asCurrency(f.totalCostUsd)} of ${asCurrency(f.monthlyBudgetUsd)} (${f.workflow})`,
-  );
-
-  await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username: "Token Cost Tracker",
-      content: `Budget threshold reached:\n${lines.join("\n")}`,
-    }),
-  });
-
-  return NextResponse.redirect(new URL("/dashboard?alert=sent", request.url));
 }

@@ -1,249 +1,117 @@
-import axios from 'axios';
-import { z } from 'zod';
-import { endOfDay, startOfDay, subDays } from 'date-fns';
-import { saveUsageRecords, type UsageInsert } from '@/lib/database';
+import Anthropic from "@anthropic-ai/sdk";
+import { ModelServiceClient } from "@google-ai/generativelanguage";
+import OpenAI from "openai";
+import { z } from "zod";
 
-export type ProviderName = 'openai' | 'anthropic' | 'google' | 'moltbook';
-
-const usageItemSchema = z.object({
-  agent: z.string().default('unknown-agent'),
-  workflow: z.string().default('default-workflow'),
-  model: z.string().default('unknown-model'),
-  inputTokens: z.number().int().nonnegative().default(0),
-  outputTokens: z.number().int().nonnegative().default(0),
-  cachedTokens: z.number().int().nonnegative().optional().default(0),
-  timestamp: z.string(),
+const usageSchema = z.object({
+  provider: z.enum(["openai", "anthropic", "google", "moltbook"]),
+  model: z.string().min(1),
+  agentId: z.string().min(1),
+  workflow: z.string().min(1),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  costUsd: z.number().nonnegative(),
+  usedAt: z.string().datetime().optional()
 });
 
-const costPerMillionTokens: Record<string, { input: number; output: number; cached?: number }> = {
-  'gpt-4o': { input: 5, output: 15 },
-  'gpt-4o-mini': { input: 0.15, output: 0.6 },
-  'gpt-4.1': { input: 2, output: 8 },
-  'claude-3-7-sonnet': { input: 3, output: 15 },
-  'claude-3-5-haiku': { input: 0.8, output: 4 },
-  'gemini-2.0-flash': { input: 0.1, output: 0.4 },
-  'gemini-1.5-pro': { input: 3.5, output: 10.5 },
-  'default': { input: 2, output: 8 },
-};
+export type NormalizedUsageEvent = z.infer<typeof usageSchema>;
 
-function estimateCost(model: string, inputTokens: number, outputTokens: number, cachedTokens: number) {
-  const pricing = costPerMillionTokens[model] ?? costPerMillionTokens.default;
-  const inputCost = (inputTokens / 1_000_000) * pricing.input;
-  const outputCost = (outputTokens / 1_000_000) * pricing.output;
-  const cachedCost = (cachedTokens / 1_000_000) * (pricing.cached ?? pricing.input * 0.25);
-  return Number((inputCost + outputCost + cachedCost).toFixed(6));
+export function parseUsageEvent(payload: unknown) {
+  return usageSchema.parse(payload);
 }
 
-function normalizeItems(provider: ProviderName, raw: unknown[]): UsageInsert[] {
-  const normalized: UsageInsert[] = [];
-
-  for (const item of raw) {
-    const parsed = usageItemSchema.safeParse(item);
-    if (!parsed.success) {
-      continue;
-    }
-
-    const row = parsed.data;
-    const totalTokens = row.inputTokens + row.outputTokens + (row.cachedTokens ?? 0);
-    normalized.push({
-      provider,
-      model: row.model,
-      workflow: row.workflow,
-      agent: row.agent,
-      date: new Date(row.timestamp),
-      inputTokens: row.inputTokens,
-      outputTokens: row.outputTokens,
-      cachedTokens: row.cachedTokens ?? 0,
-      totalTokens,
-      estimatedCost: estimateCost(row.model, row.inputTokens, row.outputTokens, row.cachedTokens ?? 0),
-    });
+export async function fetchOpenAIUsageSnapshot() {
+  if (!process.env.OPENAI_API_KEY) {
+    return { connected: false, records: [] as NormalizedUsageEvent[] };
   }
 
-  return normalized;
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+  try {
+    await client.models.list();
+    return { connected: true, records: [] as NormalizedUsageEvent[] };
+  } catch (error) {
+    return { connected: false, records: [] as NormalizedUsageEvent[], error: error instanceof Error ? error.message : "OpenAI request failed" };
+  }
 }
 
-function extractUsageArray(payload: unknown): unknown[] {
-  if (!payload || typeof payload !== 'object') {
-    return [];
+export async function fetchAnthropicUsageSnapshot() {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return { connected: false, records: [] as NormalizedUsageEvent[] };
   }
 
-  const data = payload as Record<string, unknown>;
-  const listCandidates = ['usage', 'items', 'data', 'results'];
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-  for (const key of listCandidates) {
-    if (Array.isArray(data[key])) {
-      return data[key] as unknown[];
-    }
-  }
-
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-
-  return [];
-}
-
-function getWindowForYesterday() {
-  const start = startOfDay(subDays(new Date(), 1));
-  const end = endOfDay(subDays(new Date(), 1));
-  return { start, end };
-}
-
-async function fetchOpenAIUsage() {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error('OPENAI_API_KEY is not configured');
-  }
-
-  const { start, end } = getWindowForYesterday();
-  const response = await axios.get('https://api.openai.com/v1/organization/usage/completions', {
-    params: {
-      start_time: Math.floor(start.getTime() / 1000),
-      end_time: Math.floor(end.getTime() / 1000),
-    },
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'OpenAI-Organization': process.env.OPENAI_ORG_ID,
-    },
-  });
-
-  const items = extractUsageArray(response.data).map((item) => {
-    const row = item as Record<string, unknown>;
+  try {
+    await client.models.list();
+    return { connected: true, records: [] as NormalizedUsageEvent[] };
+  } catch (error) {
     return {
-      agent: (row.project_name as string) ?? 'openai-agent',
-      workflow: (row.api_key_name as string) ?? 'openai-workflow',
-      model: (row.model as string) ?? 'gpt-4o',
-      inputTokens: Number(row.input_tokens ?? 0),
-      outputTokens: Number(row.output_tokens ?? 0),
-      cachedTokens: Number(row.input_cached_tokens ?? 0),
-      timestamp: new Date(Number(row.start_time ?? Date.now()) * 1000).toISOString(),
+      connected: false,
+      records: [] as NormalizedUsageEvent[],
+      error: error instanceof Error ? error.message : "Anthropic request failed"
     };
-  });
-
-  return normalizeItems('openai', items);
+  }
 }
 
-async function fetchAnthropicUsage() {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY is not configured');
+export async function fetchGoogleUsageSnapshot() {
+  if (!process.env.GOOGLE_AI_API_KEY) {
+    return { connected: false, records: [] as NormalizedUsageEvent[] };
   }
 
-  const { start, end } = getWindowForYesterday();
-  const response = await axios.get('https://api.anthropic.com/v1/usage', {
-    params: {
-      start_date: start.toISOString(),
-      end_date: end.toISOString(),
-    },
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
+  const client = new ModelServiceClient({
+    apiKey: process.env.GOOGLE_AI_API_KEY
   });
 
-  const items = extractUsageArray(response.data).map((item) => {
-    const row = item as Record<string, unknown>;
+  try {
+    await client.listModels({});
+    return { connected: true, records: [] as NormalizedUsageEvent[] };
+  } catch (error) {
     return {
-      agent: (row.agent as string) ?? (row.workspace as string) ?? 'anthropic-agent',
-      workflow: (row.workflow as string) ?? 'anthropic-workflow',
-      model: (row.model as string) ?? 'claude-3-7-sonnet',
-      inputTokens: Number(row.input_tokens ?? row.inputTokens ?? 0),
-      outputTokens: Number(row.output_tokens ?? row.outputTokens ?? 0),
-      cachedTokens: Number(row.cache_read_input_tokens ?? 0),
-      timestamp: (row.timestamp as string) ?? new Date().toISOString(),
+      connected: false,
+      records: [] as NormalizedUsageEvent[],
+      error: error instanceof Error ? error.message : "Google request failed"
     };
-  });
-
-  return normalizeItems('anthropic', items);
-}
-
-async function fetchGoogleUsage() {
-  const apiKey = process.env.GOOGLE_AI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GOOGLE_AI_API_KEY is not configured');
   }
-
-  const { start, end } = getWindowForYesterday();
-  const response = await axios.get('https://generativelanguage.googleapis.com/v1/usage', {
-    params: {
-      key: apiKey,
-      from: start.toISOString(),
-      to: end.toISOString(),
-    },
-  });
-
-  const items = extractUsageArray(response.data).map((item) => {
-    const row = item as Record<string, unknown>;
-    return {
-      agent: (row.agent as string) ?? 'google-agent',
-      workflow: (row.workflow as string) ?? 'google-workflow',
-      model: (row.model as string) ?? 'gemini-2.0-flash',
-      inputTokens: Number(row.input_tokens ?? row.prompt_tokens ?? 0),
-      outputTokens: Number(row.output_tokens ?? row.completion_tokens ?? 0),
-      cachedTokens: Number(row.cached_tokens ?? 0),
-      timestamp: (row.timestamp as string) ?? new Date().toISOString(),
-    };
-  });
-
-  return normalizeItems('google', items);
 }
 
-async function fetchMoltbookUsage() {
+export async function fetchMoltbookUsageSnapshot() {
+  const baseUrl = process.env.MOLTBOOK_BASE_URL;
   const apiKey = process.env.MOLTBOOK_API_KEY;
-  if (!apiKey) {
-    throw new Error('MOLTBOOK_API_KEY is not configured');
+
+  if (!baseUrl || !apiKey) {
+    return { connected: false, records: [] as NormalizedUsageEvent[] };
   }
 
-  const { start, end } = getWindowForYesterday();
-  const baseUrl = process.env.MOLTBOOK_BASE_URL || 'https://api.moltbook.com';
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/usage`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`
+      },
+      cache: "no-store"
+    });
 
-  const response = await axios.get(`${baseUrl}/v1/usage`, {
-    params: {
-      from: start.toISOString(),
-      to: end.toISOString(),
-    },
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-    },
-  });
+    if (!response.ok) {
+      return {
+        connected: false,
+        records: [] as NormalizedUsageEvent[],
+        error: `Moltbook responded with status ${response.status}`
+      };
+    }
 
-  const items = extractUsageArray(response.data).map((item) => {
-    const row = item as Record<string, unknown>;
+    const payload = (await response.json()) as { records?: unknown[] };
+    const records = (payload.records ?? [])
+      .map((record) => usageSchema.safeParse(record))
+      .filter((result): result is { success: true; data: NormalizedUsageEvent } => result.success)
+      .map((result) => result.data);
+
+    return { connected: true, records };
+  } catch (error) {
     return {
-      agent: (row.agent as string) ?? 'moltbook-agent',
-      workflow: (row.workflow as string) ?? 'moltbook-workflow',
-      model: (row.model as string) ?? 'default',
-      inputTokens: Number(row.input_tokens ?? 0),
-      outputTokens: Number(row.output_tokens ?? 0),
-      cachedTokens: Number(row.cached_tokens ?? 0),
-      timestamp: (row.timestamp as string) ?? new Date().toISOString(),
+      connected: false,
+      records: [] as NormalizedUsageEvent[],
+      error: error instanceof Error ? error.message : "Moltbook request failed"
     };
-  });
-
-  return normalizeItems('moltbook', items);
-}
-
-export async function syncProvider(provider: ProviderName) {
-  let records: UsageInsert[] = [];
-
-  if (provider === 'openai') {
-    records = await fetchOpenAIUsage();
   }
-  if (provider === 'anthropic') {
-    records = await fetchAnthropicUsage();
-  }
-  if (provider === 'google') {
-    records = await fetchGoogleUsage();
-  }
-  if (provider === 'moltbook') {
-    records = await fetchMoltbookUsage();
-  }
-
-  await saveUsageRecords(records);
-
-  return {
-    provider,
-    imported: records.length,
-    records,
-  };
 }

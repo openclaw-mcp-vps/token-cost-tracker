@@ -1,48 +1,36 @@
+// Not used by runtime.
+// This file mirrors the SQL tables for documentation only.
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
-model UsageRecord {
-  id             String   @id @default(cuid())
-  date           DateTime
-  provider       String
-  model          String
-  workflow       String
-  agent          String
-  inputTokens    Int
-  outputTokens   Int
-  cachedTokens   Int      @default(0)
-  totalTokens    Int
-  estimatedCost  Float
-  createdAt      DateTime @default(now())
+model UsageEvent {
+  id           BigInt   @id @default(autoincrement())
+  provider     String
+  model        String
+  agentId      String   @map("agent_id")
+  workflow     String
+  inputTokens  Int      @map("input_tokens")
+  outputTokens Int      @map("output_tokens")
+  totalTokens  Int      @map("total_tokens")
+  costUsd      Decimal  @map("cost_usd")
+  usedAt       DateTime @default(now()) @map("used_at")
 
-  @@index([date])
-  @@index([provider])
-  @@index([agent])
-}
-
-model Budget {
-  id                 String   @id @default(cuid())
-  agent              String   @unique
-  monthlyBudgetUsd   Float
-  discordWebhookUrl  String?
-  notifyOnExceedOnly Boolean  @default(true)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  @@map("usage_events")
 }
 
 model Subscription {
-  id               String   @id @default(cuid())
-  lemonOrderId     String   @unique
-  customerEmail    String
-  status           String
-  activationCode   String   @unique
-  activatedAt      DateTime?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id           BigInt   @id @default(autoincrement())
+  lemonOrderId String   @unique @map("lemon_order_id")
+  email        String?
+  status       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("subscriptions")
 }

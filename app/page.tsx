@@ -1,153 +1,145 @@
+"use client";
+
 import Link from "next/link";
-import Script from "next/script";
-import { CheckCircle2, ShieldAlert, Wallet, Workflow } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { getCheckoutUrl } from "@/lib/lemonsqueezy";
-import { hasDashboardAccess } from "@/lib/auth";
+import { useState } from "react";
 
-interface LandingProps {
-  searchParams?: Promise<Record<string, string | string[] | undefined>>;
-}
+export default function Home() {
+  const [loadingCheckout, setLoadingCheckout] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
-export default async function LandingPage({ searchParams }: LandingProps) {
-  const params = (await searchParams) ?? {};
-  const unlock = typeof params.unlock === "string" ? params.unlock : "";
-  const unlocked = await hasDashboardAccess();
+  const openCheckout = async () => {
+    setCheckoutError(null);
+    setLoadingCheckout(true);
+
+    try {
+      const response = await fetch("/api/checkout", { method: "POST" });
+      const data = (await response.json()) as { checkoutUrl?: string; error?: string };
+
+      if (!response.ok || !data.checkoutUrl) {
+        throw new Error(data.error || "Unable to start checkout.");
+      }
+
+      const lemon = (window as Window & {
+        LemonSqueezy?: { Url?: { Open?: (url: string) => void };
+        };
+      }).LemonSqueezy;
+
+      if (lemon?.Url?.Open) {
+        lemon.Url.Open(data.checkoutUrl);
+      } else {
+        window.location.href = data.checkoutUrl;
+      }
+    } catch (error) {
+      setCheckoutError(error instanceof Error ? error.message : "Checkout failed.");
+    } finally {
+      setLoadingCheckout(false);
+    }
+  };
 
   return (
-    <main>
-      <Script src="https://app.lemonsqueezy.com/js/lemon.js" strategy="afterInteractive" />
-      <section className="container-shell py-16 md:py-24">
-        <div className="grid md:grid-cols-2 gap-10 items-center">
-          <div>
-            <p className="text-sm uppercase tracking-[0.2em] text-[#80b5ff]">ai-agent-tools</p>
-            <h1 className="mt-3 text-4xl md:text-5xl font-bold leading-tight">
-              See exactly what each AI agent cost you yesterday.
-            </h1>
-            <p className="mt-5 text-lg text-muted leading-relaxed">
-              Token Cost Tracker gives you per-agent attribution across OpenAI, Anthropic, Google, and Moltbook so runaway workflows are visible before they hit four figures.
-            </p>
-            <div className="mt-7 flex flex-wrap gap-3">
-              <Button asChild size="lg">
-                <a className="lemonsqueezy-button" href={getCheckoutUrl()}>
-                  Start for $19/month
-                </a>
-              </Button>
-              <Button asChild variant="outline" size="lg">
-                <Link href={unlocked ? "/dashboard" : "#unlock"}>{unlocked ? "Open Dashboard" : "Unlock Existing Purchase"}</Link>
-              </Button>
+    <main className="min-h-screen px-4 py-10 sm:px-6 lg:px-10">
+      <div className="mx-auto max-w-6xl space-y-20">
+        <section className="rounded-3xl border border-slate-800 bg-[#0f172a]/60 p-8 shadow-2xl shadow-cyan-900/20 sm:p-12">
+          <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-3xl space-y-6">
+              <p className="inline-block rounded-full border border-cyan-900 bg-cyan-950/40 px-3 py-1 text-sm text-cyan-300">
+                AI Agent Cost Control for Solo Builders and Small Teams
+              </p>
+              <h1 className="text-4xl font-semibold leading-tight text-slate-100 sm:text-5xl">
+                See exactly what each AI agent cost you yesterday
+              </h1>
+              <p className="text-lg leading-relaxed text-slate-300">
+                Token Cost Tracker aggregates usage from OpenAI, Anthropic, Google, and Moltbook and
+                attributes spend to the specific workflow that generated it. Spot outliers in minutes,
+                not after your card is charged.
+              </p>
             </div>
-            {unlock === "not-found" && (
-              <p className="mt-4 text-sm text-[#ffaba8]">Purchase not found. Confirm email + order ID from your Lemon Squeezy receipt.</p>
-            )}
-            {unlock === "invalid" && (
-              <p className="mt-4 text-sm text-[#ffaba8]">Please enter a valid email and order ID.</p>
-            )}
+            <div className="w-full max-w-sm space-y-3">
+              <button
+                onClick={openCheckout}
+                disabled={loadingCheckout}
+                className="w-full rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {loadingCheckout ? "Opening checkout..." : "Start for $19/mo"}
+              </button>
+              <Link
+                href="/dashboard"
+                className="block w-full rounded-xl border border-slate-700 px-4 py-3 text-center text-sm font-medium text-slate-200 transition hover:border-cyan-400"
+              >
+                I already paid, open dashboard
+              </Link>
+              {checkoutError ? <p className="text-sm text-rose-300">{checkoutError}</p> : null}
+            </div>
           </div>
-          <Card>
-            <CardHeader>
-              <CardTitle>What this catches immediately</CardTitle>
-              <CardDescription>Visibility your provider dashboards do not give you.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm">
-              <div className="flex items-start gap-3">
-                <ShieldAlert className="h-5 w-5 mt-0.5 text-[#f2cc60]" />
-                <p>A single workflow suddenly switching to expensive models across one agent pool.</p>
-              </div>
-              <div className="flex items-start gap-3">
-                <Workflow className="h-5 w-5 mt-0.5 text-[#80b5ff]" />
-                <p>Which provider-model pair is driving today’s burn rate by workflow and agent.</p>
-              </div>
-              <div className="flex items-start gap-3">
-                <Wallet className="h-5 w-5 mt-0.5 text-[#56d364]" />
-                <p>When any agent crosses its monthly budget threshold with Discord alerts.</p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
+        </section>
 
-      <section className="container-shell py-12">
-        <div className="grid md:grid-cols-3 gap-5">
+        <section className="grid gap-6 md:grid-cols-3">
           {[
             {
-              title: "Problem",
-              body: "Provider consoles only show account totals. You cannot answer which production agent cost what.",
+              title: "The Problem",
+              text: "Provider consoles show total usage per account, but not which production workflow burned the budget."
             },
             {
-              title: "Solution",
-              body: "Track per-agent, per-model, per-workflow token burn daily, with trend lines and hard budget thresholds.",
+              title: "The Solution",
+              text: "Track token and dollar usage by agent and workflow with provider-level detail and historical trends."
             },
             {
-              title: "Who it is for",
-              body: "Solo devs and lean teams shipping Claude Code, MCP servers, and custom agent workflows.",
-            },
+              title: "The Outcome",
+              text: "Catch runaway prompts early, enforce monthly limits, and keep your AI margin predictable."
+            }
           ].map((item) => (
-            <Card key={item.title}>
-              <CardHeader>
-                <CardTitle>{item.title}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted leading-relaxed">{item.body}</p>
-              </CardContent>
-            </Card>
+            <article key={item.title} className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+              <h2 className="text-lg font-semibold text-slate-100">{item.title}</h2>
+              <p className="mt-3 text-sm leading-relaxed text-slate-300">{item.text}</p>
+            </article>
           ))}
-        </div>
-      </section>
+        </section>
 
-      <section className="container-shell py-12" id="pricing">
-        <Card className="border-[#2f81f7]/50">
-          <CardHeader>
-            <CardTitle>Simple pricing</CardTitle>
-            <CardDescription>One plan, built for high-signal cost monitoring.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-              <div>
-                <p className="text-4xl font-bold">$19<span className="text-base text-muted">/month</span></p>
-                <ul className="mt-4 space-y-2 text-sm text-muted">
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-[#56d364]" />Unlimited agents and workflows</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-[#56d364]" />Provider and model-level cost attribution</li>
-                  <li className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-[#56d364]" />Discord alerts for budget overruns</li>
-                </ul>
-              </div>
-              <Button asChild size="lg">
-                <a className="lemonsqueezy-button" href={getCheckoutUrl()}>Launch Checkout</a>
-              </Button>
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-8">
+          <h2 className="text-2xl font-semibold text-slate-100">Pricing</h2>
+          <p className="mt-2 max-w-2xl text-slate-300">
+            One plan, built for builders shipping real agents. Includes unlimited tracked requests, daily
+            snapshots, Discord alerts, and workflow-level attribution.
+          </p>
+          <div className="mt-6 max-w-md rounded-2xl border border-cyan-900 bg-cyan-950/30 p-6">
+            <p className="text-sm text-cyan-200">Token Cost Tracker</p>
+            <p className="mt-2 text-4xl font-bold text-slate-100">$19<span className="text-lg text-slate-300">/mo</span></p>
+            <ul className="mt-4 space-y-2 text-sm text-slate-200">
+              <li>Per-agent spend attribution across providers</li>
+              <li>Monthly budget threshold alerts to Discord</li>
+              <li>Daily and monthly burn trend dashboard</li>
+              <li>API routes for provider ingestion and webhook sync</li>
+            </ul>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-8">
+          <h2 className="text-2xl font-semibold text-slate-100">FAQ</h2>
+          <div className="mt-6 space-y-5 text-sm text-slate-300">
+            <div>
+              <h3 className="font-semibold text-slate-100">How is usage attributed to one workflow?</h3>
+              <p className="mt-1">
+                Each usage record stores provider metadata, model, agent key, and workflow tag. You can
+                pass these tags from your runtime or map API keys to agents.
+              </p>
             </div>
-          </CardContent>
-        </Card>
-      </section>
-
-      <section className="container-shell py-12" id="unlock">
-        <Card>
-          <CardHeader>
-            <CardTitle>Unlock your dashboard after purchase</CardTitle>
-            <CardDescription>Enter the same email and order ID from your Lemon Squeezy receipt.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form action="/api/paywall/unlock" method="POST" className="grid md:grid-cols-3 gap-3">
-              <input name="email" required type="email" placeholder="you@company.com" className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" />
-              <input name="orderId" required type="text" placeholder="Order ID" className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" />
-              <Button type="submit">Unlock Access</Button>
-            </form>
-          </CardContent>
-        </Card>
-      </section>
-
-      <section className="container-shell py-12">
-        <Card>
-          <CardHeader>
-            <CardTitle>FAQ</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4 text-sm text-muted">
-            <p><strong className="text-[var(--text)]">Does this replace provider billing pages?</strong> No. It adds agent and workflow attribution across providers so you can act on cost drivers.</p>
-            <p><strong className="text-[var(--text)]">How do Discord alerts work?</strong> Configure a webhook URL and the dashboard sends a summary whenever an agent breaches threshold.</p>
-            <p><strong className="text-[var(--text)]">Can I start before wiring every provider?</strong> Yes. Connect providers incrementally and sync usage whenever keys are available.</p>
-          </CardContent>
-        </Card>
-      </section>
+            <div>
+              <h3 className="font-semibold text-slate-100">Do I need to move my existing agent stack?</h3>
+              <p className="mt-1">
+                No. Keep your current stack and send usage events to the provider ingestion endpoints.
+                The dashboard normalizes and aggregates cost data in Postgres.
+              </p>
+            </div>
+            <div>
+              <h3 className="font-semibold text-slate-100">What happens after checkout?</h3>
+              <p className="mt-1">
+                Lemon Squeezy webhook marks your account as active. The dashboard unlocks with a secure
+                access cookie so only paying users can open the tool.
+              </p>
+            </div>
+          </div>
+        </section>
+      </div>
     </main>
   );
 }

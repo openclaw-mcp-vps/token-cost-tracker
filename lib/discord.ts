@@ -1,30 +1,36 @@
-type DiscordAlertPayload = {
-  webhookUrl: string;
-  agent: string;
-  monthlySpend: number;
-  monthlyBudget: number;
-};
+export async function sendDiscordBudgetAlert(input: {
+  agentId: string;
+  monthlySpendUsd: number;
+  monthlyBudgetUsd: number;
+}) {
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
 
-export async function sendDiscordBudgetAlert(payload: DiscordAlertPayload) {
-  const overBy = payload.monthlySpend - payload.monthlyBudget;
+  if (!webhookUrl) {
+    return { sent: false, reason: "DISCORD_WEBHOOK_URL is not configured." };
+  }
 
-  const response = await fetch(payload.webhookUrl, {
-    method: 'POST',
+  const content = [
+    "🚨 **Budget Alert: Agent overspend detected**",
+    `Agent: \`${input.agentId}\``,
+    `Monthly spend: **$${input.monthlySpendUsd.toFixed(2)}**`,
+    `Budget: **$${input.monthlyBudgetUsd.toFixed(2)}**`,
+    "Review recent workflow usage in Token Cost Tracker dashboard."
+  ].join("\n");
+
+  const response = await fetch(webhookUrl, {
+    method: "POST",
     headers: {
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      content: [
-        `Budget alert for ${payload.agent}`,
-        `Spend this month: $${payload.monthlySpend.toFixed(2)}`,
-        `Budget: $${payload.monthlyBudget.toFixed(2)}`,
-        `Over budget by: $${overBy.toFixed(2)}`,
-      ].join('\n'),
-    }),
+      username: "Token Cost Tracker",
+      content
+    })
   });
 
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Discord webhook failed: ${response.status} ${body}`);
+    throw new Error(`Discord webhook failed with status ${response.status}`);
   }
+
+  return { sent: true };
 }

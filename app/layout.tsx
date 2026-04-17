@@ -1,43 +1,35 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import "./globals.css";
 
-const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-
 export const metadata: Metadata = {
-  metadataBase: new URL(appUrl),
-  title: "Token Cost Tracker | Per-Agent AI Cost Visibility",
+  metadataBase: new URL("https://token-cost-tracker.app"),
+  title: "Token Cost Tracker | Per-Agent AI Spend Visibility",
   description:
-    "Track token usage and spend across OpenAI, Anthropic, Google, and Moltbook with per-agent attribution and budget alerts.",
-  keywords: [
-    "ai agent cost tracking",
-    "token usage dashboard",
-    "anthropic cost monitor",
-    "openai usage by workflow",
-    "discord budget alerts",
-  ],
+    "Track AI token spend per agent, workflow, provider, and model. Catch runaway costs early and get Discord alerts before your monthly budget is gone.",
   openGraph: {
     title: "Token Cost Tracker",
     description:
-      "See exactly what each AI agent cost you yesterday, broken down per provider, model, and workflow.",
+      "See exactly what each AI agent cost you yesterday, broken down by provider, model, and workflow.",
     type: "website",
-    url: appUrl,
+    url: "https://token-cost-tracker.app"
   },
-  twitter: {
-    card: "summary_large_image",
-    title: "Token Cost Tracker",
-    description:
-      "Per-agent AI spend visibility with budget alerts and provider-level breakdowns.",
-  },
+  alternates: {
+    canonical: "/"
+  }
 };
 
 export default function RootLayout({
-  children,
+  children
 }: Readonly<{
   children: React.ReactNode;
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <Script src="https://app.lemonsqueezy.com/js/lemon.js" strategy="afterInteractive" />
+        {children}
+      </body>
     </html>
   );
 }

@@ -2,8 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   experimental: {
-    typedRoutes: true,
-  },
+    optimizePackageImports: ["recharts"]
+  }
 };
 
 export default nextConfig;

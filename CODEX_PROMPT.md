@@ -11,7 +11,7 @@ NICHE: ai-agent-tools
 PRICE: $$19/mo
 
 ARCHITECTURE SPEC:
-A Next.js dashboard that connects to multiple AI provider APIs to track token usage per agent/workflow. Features real-time cost monitoring, budget alerts via Discord webhooks, and detailed breakdowns by provider, model, and time period.
+A Next.js dashboard that connects to multiple AI provider APIs to fetch usage data, aggregates costs per agent/workflow using API key tagging or request metadata, and provides real-time cost monitoring with Discord alerts. Uses PostgreSQL to store historical data and Lemon Squeezy for subscription management.
 
 PLANNED FILES:
 - app/page.tsx
@@ -20,22 +20,17 @@ PLANNED FILES:
 - app/api/providers/anthropic/route.ts
 - app/api/providers/google/route.ts
 - app/api/providers/moltbook/route.ts
-- app/api/usage/sync/route.ts
+- app/api/webhooks/lemon-squeezy/route.ts
 - app/api/alerts/discord/route.ts
-- app/api/webhooks/lemonsqueezy/route.ts
-- components/dashboard/CostChart.tsx
-- components/dashboard/AgentTable.tsx
-- components/dashboard/BudgetAlerts.tsx
-- components/providers/ApiKeyForm.tsx
-- lib/providers/openai.ts
-- lib/providers/anthropic.ts
-- lib/providers/google.ts
-- lib/providers/moltbook.ts
-- lib/database/schema.ts
-- lib/auth.ts
-- lib/lemonsqueezy.ts
+- components/CostChart.tsx
+- components/AgentTable.tsx
+- components/AlertSettings.tsx
+- lib/providers.ts
+- lib/database.ts
+- lib/discord.ts
+- prisma/schema.prisma
 
-DEPENDENCIES: next, tailwindcss, prisma, @prisma/client, next-auth, @lemonsqueezy/lemonsqueezy.js, recharts, openai, @anthropic-ai/sdk, @google/generative-ai, discord.js, zod, date-fns, lucide-react
+DEPENDENCIES: next, react, tailwindcss, @prisma/client, prisma, recharts, @lemonsqueezy/lemonsqueezy.js, discord.js, openai, @anthropic-ai/sdk, @google-ai/generativelanguage, zod, next-auth, bcryptjs
 
 REQUIREMENTS:
 - Next.js 15 with App Router (app/ directory)
@@ -50,6 +45,7 @@ REQUIREMENTS:
 - SEO meta tags, Open Graph tags
 - /api/health endpoint that returns {"status":"ok"}
 - NO HEAVY ORMs: Do NOT use Prisma, Drizzle, TypeORM, Sequelize, or Mongoose. If the tool needs persistence, use direct SQL via `pg` (Postgres) or `better-sqlite3` (local), or just filesystem JSON. Reason: these ORMs require schema files and codegen steps that fail on Vercel when misconfigured.
+- INTERNAL FILE DISCIPLINE: Every internal import (paths starting with `@/`, `./`, or `../`) MUST refer to a file you actually create in this build. If you write `import { Card } from "@/components/ui/card"`, then `components/ui/card.tsx` MUST exist with a real `export const Card` (or `export default Card`). Before finishing, scan all internal imports and verify every target file exists. Do NOT use shadcn/ui patterns unless you create every component from scratch — easier path: write all UI inline in the page that uses it.
 - DEPENDENCY DISCIPLINE: Every package imported in any .ts, .tsx, .js, or .jsx file MUST be
   listed in package.json dependencies (or devDependencies for build-only). Before finishing,
   scan all source files for `import` statements and verify every external package (anything
@@ -74,8 +70,3 @@ After creating all files:
 
 Do NOT use placeholder text. Write real, helpful content for the landing page
 and the tool itself. The tool should actually work and provide value.
-
-
-PREVIOUS ATTEMPT FAILED WITH:
-Codex timed out after 600s
-Please fix the above errors and regenerate.

@@ -1,46 +1,53 @@
-import type { AgentRow } from '@/lib/types';
-import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+type AgentRow = {
+  date: string;
+  agentId: string;
+  provider: string;
+  model: string;
+  workflow: string;
+  totalTokens: number;
+  totalCostUsd: number;
+};
 
 export function AgentTable({ rows }: { rows: AgentRow[] }) {
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Agent</TableHead>
-          <TableHead>Monthly Spend</TableHead>
-          <TableHead>30d Cost</TableHead>
-          <TableHead>Tokens</TableHead>
-          <TableHead>Providers</TableHead>
-          <TableHead>Top Model</TableHead>
-          <TableHead>Workflow Count</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => {
-          const overBudget = row.monthlyBudgetUsd !== null && row.monthlySpendUsd > row.monthlyBudgetUsd;
-          return (
-            <TableRow key={row.agent}>
-              <TableCell className="font-medium">{row.agent}</TableCell>
-              <TableCell>
-                <div className="flex items-center gap-2">
-                  <span>${row.monthlySpendUsd.toFixed(2)}</span>
-                  {row.monthlyBudgetUsd !== null ? (
-                    <Badge variant={overBudget ? 'destructive' : 'secondary'}>
-                      Budget ${row.monthlyBudgetUsd.toFixed(0)}
-                    </Badge>
-                  ) : null}
-                </div>
-              </TableCell>
-              <TableCell>${row.cost.toFixed(2)}</TableCell>
-              <TableCell>{row.tokens.toLocaleString()}</TableCell>
-              <TableCell>{row.providers.join(', ')}</TableCell>
-              <TableCell>{row.models[0] ?? 'n/a'}</TableCell>
-              <TableCell>{row.workflows.length}</TableCell>
-            </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+    <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+      <h2 className="text-lg font-semibold text-slate-100">Per-Agent Usage</h2>
+      <p className="mt-1 text-sm text-slate-400">Exact spend breakdown by provider, model, and workflow tag.</p>
+      <div className="mt-4 overflow-x-auto">
+        <table className="min-w-full text-left text-sm">
+          <thead className="text-slate-400">
+            <tr>
+              <th className="px-3 py-2 font-medium">Date</th>
+              <th className="px-3 py-2 font-medium">Agent</th>
+              <th className="px-3 py-2 font-medium">Provider</th>
+              <th className="px-3 py-2 font-medium">Model</th>
+              <th className="px-3 py-2 font-medium">Workflow</th>
+              <th className="px-3 py-2 font-medium">Tokens</th>
+              <th className="px-3 py-2 font-medium">Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={`${row.date}-${row.agentId}-${row.workflow}-${index}`} className="border-t border-slate-800 text-slate-200">
+                <td className="px-3 py-2">{row.date}</td>
+                <td className="px-3 py-2">{row.agentId}</td>
+                <td className="px-3 py-2 capitalize">{row.provider}</td>
+                <td className="px-3 py-2">{row.model}</td>
+                <td className="px-3 py-2">{row.workflow}</td>
+                <td className="px-3 py-2">{row.totalTokens.toLocaleString()}</td>
+                <td className="px-3 py-2">${row.totalCostUsd.toFixed(2)}</td>
+              </tr>
+            ))}
+            {!rows.length ? (
+              <tr>
+                <td className="px-3 py-6 text-slate-400" colSpan={7}>
+                  No usage records yet. Send usage events to `/api/providers/*` to populate the dashboard.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }

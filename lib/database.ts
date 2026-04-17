@@ -1,236 +1,209 @@
-import { PrismaClient } from '@prisma/client';
-import { endOfDay, startOfDay, subDays } from 'date-fns';
+import { Pool } from "pg";
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+const connectionString = process.env.DATABASE_URL;
 
-export const prisma = globalForPrisma.prisma ?? new PrismaClient();
+const pool = connectionString
+  ? new Pool({ connectionString })
+  : null;
 
-if (process.env.NODE_ENV !== 'production') {
-  globalForPrisma.prisma = prisma;
-}
+export type UsageRow = {
+  id: number;
+  provider: string;
+  model: string;
+  agent_id: string;
+  workflow: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  used_at: string;
+};
 
-export type UsageInsert = {
+export type DailyAgentCost = {
+  date: string;
+  agent_id: string;
   provider: string;
   model: string;
   workflow: string;
-  agent: string;
-  date: Date;
+  total_tokens: string;
+  total_cost_usd: string;
+};
+
+export async function ensureTables() {
+  if (!pool) {
+    return;
+  }
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id BIGSERIAL PRIMARY KEY,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      workflow TEXT NOT NULL,
+      input_tokens INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      total_tokens INTEGER NOT NULL,
+      cost_usd NUMERIC(14, 6) NOT NULL,
+      used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id BIGSERIAL PRIMARY KEY,
+      lemon_order_id TEXT UNIQUE NOT NULL,
+      email TEXT,
+      status TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
+
+export async function insertUsageEvent(event: {
+  provider: string;
+  model: string;
+  agentId: string;
+  workflow: string;
   inputTokens: number;
   outputTokens: number;
-  cachedTokens?: number;
   totalTokens: number;
-  estimatedCost: number;
-};
-
-type AgentAccumulator = {
-  agent: string;
-  cost: number;
-  tokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  providers: Set<string>;
-  models: Set<string>;
-  workflows: Set<string>;
-};
-
-export type BudgetRow = {
-  id: string;
-  agent: string;
-  monthlyBudgetUsd: number;
-  discordWebhookUrl: string | null;
-  updatedAt: Date;
-};
-
-export async function saveUsageRecords(records: UsageInsert[]) {
-  if (records.length === 0) {
-    return { count: 0 };
-  }
-
-  const normalized = records.map((record) => ({
-    ...record,
-    cachedTokens: record.cachedTokens ?? 0,
-  }));
-
-  await prisma.usageRecord.createMany({
-    data: normalized,
-  });
-
-  return { count: normalized.length };
-}
-
-export async function getDashboardSnapshot(days = 30) {
-  const from = startOfDay(subDays(new Date(), days - 1));
-  const to = endOfDay(new Date());
-
-  const [records, budgets] = await Promise.all([
-    prisma.usageRecord.findMany({
-      where: { date: { gte: from, lte: to } },
-      orderBy: { date: 'asc' },
-    }),
-    prisma.budget.findMany(),
-  ]);
-
-  const byDay = new Map<string, { date: string; cost: number; tokens: number }>();
-  const byAgent = new Map<string, AgentAccumulator>();
-
-  let totalCost = 0;
-  let totalTokens = 0;
-
-  for (const row of records) {
-    const dayKey = row.date.toISOString().slice(0, 10);
-    const dayBucket = byDay.get(dayKey) ?? { date: dayKey, cost: 0, tokens: 0 };
-    dayBucket.cost += row.estimatedCost;
-    dayBucket.tokens += row.totalTokens;
-    byDay.set(dayKey, dayBucket);
-
-    const existing = byAgent.get(row.agent);
-    const agentBucket: AgentAccumulator =
-      existing ?? {
-        agent: row.agent,
-        cost: 0,
-        tokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        providers: new Set<string>(),
-        models: new Set<string>(),
-        workflows: new Set<string>(),
-      };
-
-    agentBucket.cost += row.estimatedCost;
-    agentBucket.tokens += row.totalTokens;
-    agentBucket.inputTokens += row.inputTokens;
-    agentBucket.outputTokens += row.outputTokens;
-    agentBucket.providers.add(row.provider);
-    agentBucket.models.add(row.model);
-    agentBucket.workflows.add(row.workflow);
-    byAgent.set(row.agent, agentBucket);
-
-    totalCost += row.estimatedCost;
-    totalTokens += row.totalTokens;
-  }
-
-  const budgetMap = new Map(budgets.map((budget) => [budget.agent, budget]));
-
-  const monthlyFrom = startOfDay(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const monthlySpendRows = await prisma.usageRecord.findMany({
-    where: {
-      date: {
-        gte: monthlyFrom,
-        lte: to,
-      },
-    },
-  });
-
-  const monthlySpend = new Map<string, number>();
-  for (const row of monthlySpendRows) {
-    monthlySpend.set(row.agent, (monthlySpend.get(row.agent) ?? 0) + row.estimatedCost);
-  }
-
-  const runawayAgents = Array.from(monthlySpend.entries())
-    .map(([agent, spend]) => {
-      const budget = budgetMap.get(agent);
-      return {
-        agent,
-        spend,
-        budget: budget?.monthlyBudgetUsd ?? 0,
-        overBy: budget ? Math.max(0, spend - budget.monthlyBudgetUsd) : 0,
-      };
-    })
-    .filter((entry) => entry.budget > 0 && entry.spend > entry.budget)
-    .sort((a, b) => b.overBy - a.overBy);
-
-  const agentRows = Array.from(byAgent.values())
-    .map((entry) => ({
-      agent: entry.agent,
-      cost: Number(entry.cost.toFixed(4)),
-      tokens: entry.tokens,
-      inputTokens: entry.inputTokens,
-      outputTokens: entry.outputTokens,
-      providers: Array.from(entry.providers),
-      models: Array.from(entry.models),
-      workflows: Array.from(entry.workflows),
-      monthlyBudgetUsd: budgetMap.get(entry.agent)?.monthlyBudgetUsd ?? null,
-      monthlySpendUsd: Number((monthlySpend.get(entry.agent) ?? 0).toFixed(4)),
-    }))
-    .sort((a, b) => b.cost - a.cost);
-
-  return {
-    totalCost: Number(totalCost.toFixed(4)),
-    totalTokens,
-    from: from.toISOString(),
-    to: to.toISOString(),
-    byDay: Array.from(byDay.values()).sort((a, b) => a.date.localeCompare(b.date)),
-    agents: agentRows,
-    runawayAgents,
-  };
-}
-
-export async function getBudgets(): Promise<BudgetRow[]> {
-  return prisma.budget.findMany({
-    orderBy: [{ updatedAt: 'desc' }, { agent: 'asc' }],
-    select: {
-      id: true,
-      agent: true,
-      monthlyBudgetUsd: true,
-      discordWebhookUrl: true,
-      updatedAt: true,
-    },
-  });
-}
-
-export async function activateSubscription(activationCode: string) {
-  const sub = await prisma.subscription.findUnique({ where: { activationCode } });
-  if (!sub || sub.status !== 'active') {
+  costUsd: number;
+  usedAt?: string;
+}) {
+  if (!pool) {
     return null;
   }
 
-  await prisma.subscription.update({
-    where: { id: sub.id },
-    data: { activatedAt: new Date() },
-  });
+  await ensureTables();
 
-  return sub;
+  const result = await pool.query<UsageRow>(
+    `
+      INSERT INTO usage_events
+        (provider, model, agent_id, workflow, input_tokens, output_tokens, total_tokens, cost_usd, used_at)
+      VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()))
+      RETURNING *;
+    `,
+    [
+      event.provider,
+      event.model,
+      event.agentId,
+      event.workflow,
+      event.inputTokens,
+      event.outputTokens,
+      event.totalTokens,
+      event.costUsd,
+      event.usedAt ?? null
+    ]
+  );
+
+  return result.rows[0];
 }
 
-export async function upsertSubscription(params: {
-  lemonOrderId: string;
-  customerEmail: string;
-  status: string;
-  activationCode: string;
-}) {
-  return prisma.subscription.upsert({
-    where: { lemonOrderId: params.lemonOrderId },
-    create: params,
-    update: {
-      customerEmail: params.customerEmail,
-      status: params.status,
-      activationCode: params.activationCode,
-    },
-  });
-}
-
-export async function getRunawayAlertsWithWebhooks() {
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const [rows, budgets] = await Promise.all([
-    prisma.usageRecord.findMany({ where: { date: { gte: monthStart } } }),
-    prisma.budget.findMany({ where: { discordWebhookUrl: { not: null } } }),
-  ]);
-
-  const spendByAgent = new Map<string, number>();
-  for (const row of rows) {
-    spendByAgent.set(row.agent, (spendByAgent.get(row.agent) ?? 0) + row.estimatedCost);
+export async function getRecentUsage(days = 30) {
+  if (!pool) {
+    return [] as UsageRow[];
   }
 
-  return budgets
-    .map((budget) => {
-      const spend = spendByAgent.get(budget.agent) ?? 0;
-      return {
-        agent: budget.agent,
-        spend,
-        budget: budget.monthlyBudgetUsd,
-        discordWebhookUrl: budget.discordWebhookUrl,
-      };
-    })
-    .filter((item) => item.discordWebhookUrl && item.spend > item.budget);
+  await ensureTables();
+
+  const result = await pool.query<UsageRow>(
+    `
+      SELECT *
+      FROM usage_events
+      WHERE used_at >= NOW() - ($1::text || ' days')::interval
+      ORDER BY used_at DESC;
+    `,
+    [days]
+  );
+
+  return result.rows;
+}
+
+export async function getDailyAgentCosts(days = 30) {
+  if (!pool) {
+    return [] as DailyAgentCost[];
+  }
+
+  await ensureTables();
+
+  const result = await pool.query<DailyAgentCost>(
+    `
+      SELECT
+        DATE(used_at)::text as date,
+        agent_id,
+        provider,
+        model,
+        workflow,
+        SUM(total_tokens)::text as total_tokens,
+        SUM(cost_usd)::text as total_cost_usd
+      FROM usage_events
+      WHERE used_at >= NOW() - ($1::text || ' days')::interval
+      GROUP BY DATE(used_at), agent_id, provider, model, workflow
+      ORDER BY DATE(used_at) DESC, SUM(cost_usd) DESC;
+    `,
+    [days]
+  );
+
+  return result.rows;
+}
+
+export async function getMonthlyAgentSpend() {
+  if (!pool) {
+    return [] as { agent_id: string; total_cost_usd: string }[];
+  }
+
+  await ensureTables();
+
+  const result = await pool.query<{ agent_id: string; total_cost_usd: string }>(`
+    SELECT
+      agent_id,
+      SUM(cost_usd)::text as total_cost_usd
+    FROM usage_events
+    WHERE date_trunc('month', used_at) = date_trunc('month', NOW())
+    GROUP BY agent_id;
+  `);
+
+  return result.rows;
+}
+
+export async function upsertSubscription(input: {
+  lemonOrderId: string;
+  email?: string;
+  status: string;
+}) {
+  if (!pool) {
+    return;
+  }
+
+  await ensureTables();
+
+  await pool.query(
+    `
+      INSERT INTO subscriptions (lemon_order_id, email, status)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (lemon_order_id)
+      DO UPDATE SET
+        email = EXCLUDED.email,
+        status = EXCLUDED.status;
+    `,
+    [input.lemonOrderId, input.email ?? null, input.status]
+  );
+}
+
+export async function isAnySubscriptionActive() {
+  if (!pool) {
+    return false;
+  }
+
+  await ensureTables();
+
+  const result = await pool.query<{ active_count: string }>(`
+    SELECT COUNT(*)::text as active_count
+    FROM subscriptions
+    WHERE status IN ('paid', 'active', 'on_trial');
+  `);
+
+  return Number(result.rows[0]?.active_count ?? 0) > 0;
 }
