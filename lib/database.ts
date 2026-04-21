@@ -1,209 +1,127 @@
-import { Pool } from "pg";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { AppDatabase, ProviderId, UsageRecord } from "@/lib/types";
 
-const connectionString = process.env.DATABASE_URL;
+const DB_DIR = path.join(process.cwd(), "data");
+const DB_FILE = path.join(DB_DIR, "store.json");
 
-const pool = connectionString
-  ? new Pool({ connectionString })
-  : null;
+const defaultDb = (): AppDatabase => ({
+  usageRecords: [],
+  providers: {
+    openai: null,
+    anthropic: null,
+    google: null,
+    moltbook: null
+  },
+  alertSettings: {
+    enabled: false,
+    monthlyBudgetUsd: 100,
+    notifiedAgentMonths: []
+  },
+  entitlements: []
+});
 
-export type UsageRow = {
-  id: number;
-  provider: string;
-  model: string;
-  agent_id: string;
-  workflow: string;
-  input_tokens: number;
-  output_tokens: number;
-  total_tokens: number;
-  cost_usd: number;
-  used_at: string;
-};
+async function ensureDb(): Promise<void> {
+  await mkdir(DB_DIR, { recursive: true });
 
-export type DailyAgentCost = {
-  date: string;
-  agent_id: string;
-  provider: string;
-  model: string;
-  workflow: string;
-  total_tokens: string;
-  total_cost_usd: string;
-};
+  try {
+    await readFile(DB_FILE, "utf-8");
+  } catch {
+    await writeFile(DB_FILE, JSON.stringify(defaultDb(), null, 2), "utf-8");
+  }
+}
 
-export async function ensureTables() {
-  if (!pool) {
+export async function readDb(): Promise<AppDatabase> {
+  await ensureDb();
+  const raw = await readFile(DB_FILE, "utf-8");
+  const parsed = JSON.parse(raw) as AppDatabase;
+
+  return {
+    ...defaultDb(),
+    ...parsed,
+    providers: {
+      ...defaultDb().providers,
+      ...(parsed.providers ?? {})
+    }
+  };
+}
+
+let writeQueue = Promise.resolve();
+
+export async function writeDb(updater: (db: AppDatabase) => AppDatabase | Promise<AppDatabase>): Promise<AppDatabase> {
+  writeQueue = writeQueue.then(async () => {
+    const current = await readDb();
+    const next = await updater(current);
+    await writeFile(DB_FILE, JSON.stringify(next, null, 2), "utf-8");
+  });
+
+  await writeQueue;
+  return readDb();
+}
+
+export async function upsertUsageRecords(records: UsageRecord[]): Promise<void> {
+  if (records.length === 0) {
     return;
   }
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS usage_events (
-      id BIGSERIAL PRIMARY KEY,
-      provider TEXT NOT NULL,
-      model TEXT NOT NULL,
-      agent_id TEXT NOT NULL,
-      workflow TEXT NOT NULL,
-      input_tokens INTEGER NOT NULL,
-      output_tokens INTEGER NOT NULL,
-      total_tokens INTEGER NOT NULL,
-      cost_usd NUMERIC(14, 6) NOT NULL,
-      used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
+  await writeDb((db) => {
+    const existing = new Set(db.usageRecords.map((r) => r.id));
+    const merged = [...db.usageRecords];
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS subscriptions (
-      id BIGSERIAL PRIMARY KEY,
-      lemon_order_id TEXT UNIQUE NOT NULL,
-      email TEXT,
-      status TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
+    for (const record of records) {
+      if (!existing.has(record.id)) {
+        existing.add(record.id);
+        merged.push(record);
+      }
+    }
+
+    merged.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+
+    return {
+      ...db,
+      usageRecords: merged.slice(0, 20000)
+    };
+  });
 }
 
-export async function insertUsageEvent(event: {
-  provider: string;
-  model: string;
-  agentId: string;
-  workflow: string;
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-  costUsd: number;
-  usedAt?: string;
-}) {
-  if (!pool) {
-    return null;
+export function getProviderConfigFromEnv(provider: ProviderId) {
+  if (provider === "openai" && process.env.OPENAI_API_KEY) {
+    return {
+      provider,
+      apiKey: process.env.OPENAI_API_KEY,
+      enabled: true,
+      organizationId: process.env.OPENAI_ORG_ID,
+      updatedAt: new Date().toISOString()
+    };
   }
 
-  await ensureTables();
-
-  const result = await pool.query<UsageRow>(
-    `
-      INSERT INTO usage_events
-        (provider, model, agent_id, workflow, input_tokens, output_tokens, total_tokens, cost_usd, used_at)
-      VALUES
-        ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()))
-      RETURNING *;
-    `,
-    [
-      event.provider,
-      event.model,
-      event.agentId,
-      event.workflow,
-      event.inputTokens,
-      event.outputTokens,
-      event.totalTokens,
-      event.costUsd,
-      event.usedAt ?? null
-    ]
-  );
-
-  return result.rows[0];
-}
-
-export async function getRecentUsage(days = 30) {
-  if (!pool) {
-    return [] as UsageRow[];
+  if (provider === "anthropic" && process.env.ANTHROPIC_API_KEY) {
+    return {
+      provider,
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      enabled: true,
+      updatedAt: new Date().toISOString()
+    };
   }
 
-  await ensureTables();
-
-  const result = await pool.query<UsageRow>(
-    `
-      SELECT *
-      FROM usage_events
-      WHERE used_at >= NOW() - ($1::text || ' days')::interval
-      ORDER BY used_at DESC;
-    `,
-    [days]
-  );
-
-  return result.rows;
-}
-
-export async function getDailyAgentCosts(days = 30) {
-  if (!pool) {
-    return [] as DailyAgentCost[];
+  if (provider === "google" && process.env.GOOGLE_API_KEY) {
+    return {
+      provider,
+      apiKey: process.env.GOOGLE_API_KEY,
+      enabled: true,
+      updatedAt: new Date().toISOString()
+    };
   }
 
-  await ensureTables();
-
-  const result = await pool.query<DailyAgentCost>(
-    `
-      SELECT
-        DATE(used_at)::text as date,
-        agent_id,
-        provider,
-        model,
-        workflow,
-        SUM(total_tokens)::text as total_tokens,
-        SUM(cost_usd)::text as total_cost_usd
-      FROM usage_events
-      WHERE used_at >= NOW() - ($1::text || ' days')::interval
-      GROUP BY DATE(used_at), agent_id, provider, model, workflow
-      ORDER BY DATE(used_at) DESC, SUM(cost_usd) DESC;
-    `,
-    [days]
-  );
-
-  return result.rows;
-}
-
-export async function getMonthlyAgentSpend() {
-  if (!pool) {
-    return [] as { agent_id: string; total_cost_usd: string }[];
+  if (provider === "moltbook" && process.env.MOLTBOOK_API_KEY) {
+    return {
+      provider,
+      apiKey: process.env.MOLTBOOK_API_KEY,
+      enabled: true,
+      baseUrl: process.env.MOLTBOOK_BASE_URL,
+      updatedAt: new Date().toISOString()
+    };
   }
 
-  await ensureTables();
-
-  const result = await pool.query<{ agent_id: string; total_cost_usd: string }>(`
-    SELECT
-      agent_id,
-      SUM(cost_usd)::text as total_cost_usd
-    FROM usage_events
-    WHERE date_trunc('month', used_at) = date_trunc('month', NOW())
-    GROUP BY agent_id;
-  `);
-
-  return result.rows;
-}
-
-export async function upsertSubscription(input: {
-  lemonOrderId: string;
-  email?: string;
-  status: string;
-}) {
-  if (!pool) {
-    return;
-  }
-
-  await ensureTables();
-
-  await pool.query(
-    `
-      INSERT INTO subscriptions (lemon_order_id, email, status)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (lemon_order_id)
-      DO UPDATE SET
-        email = EXCLUDED.email,
-        status = EXCLUDED.status;
-    `,
-    [input.lemonOrderId, input.email ?? null, input.status]
-  );
-}
-
-export async function isAnySubscriptionActive() {
-  if (!pool) {
-    return false;
-  }
-
-  await ensureTables();
-
-  const result = await pool.query<{ active_count: string }>(`
-    SELECT COUNT(*)::text as active_count
-    FROM subscriptions
-    WHERE status IN ('paid', 'active', 'on_trial');
-  `);
-
-  return Number(result.rows[0]?.active_count ?? 0) > 0;
+  return null;
 }

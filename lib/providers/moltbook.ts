@@ -1,59 +1,71 @@
-import { z } from "zod";
-import type { UsageRecord } from "@/lib/database/schema";
-import { synthesizeUsage } from "@/lib/providers/shared";
+import { ProviderConfig, UsageRecord } from "@/lib/types";
+import { estimateCostUsd } from "@/lib/providers/pricing";
+import { makeUsageId, normalizeNumber, parseArrayPayload } from "@/lib/providers/common";
 
-const MoltbookResponse = z.object({
-  usage: z
-    .array(
-      z.object({
-        model: z.string(),
-        workflow: z.string(),
-        agentName: z.string(),
-        inputTokens: z.number(),
-        outputTokens: z.number(),
-        totalCostUsd: z.number(),
-        capturedAt: z.string(),
-      }),
-    )
-    .default([]),
-});
+function buildMoltbookUrl(config: ProviderConfig, start: Date, end: Date): string {
+  const base = config.baseUrl?.trim() || "https://api.moltbook.com/v1";
+  const url = new URL(base);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/usage`;
+  url.searchParams.set("start", start.toISOString());
+  url.searchParams.set("end", end.toISOString());
+  return url.toString();
+}
 
-export async function fetchMoltbookUsage(): Promise<Omit<UsageRecord, "id">[]> {
-  const key = process.env.MOLTBOOK_API_KEY;
-  const base = process.env.MOLTBOOK_API_BASE_URL;
-  if (!key || !base) {
-    return synthesizeUsage("moltbook", "moltbook-agent-v1");
+export async function fetchMoltbookUsage(config: ProviderConfig, start: Date, end: Date): Promise<UsageRecord[]> {
+  if (!config.apiKey || !config.enabled) {
+    return [];
   }
 
-  try {
-    const response = await fetch(`${base.replace(/\/$/, "")}/usage/yesterday`, {
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      cache: "no-store",
+  const response = await fetch(buildMoltbookUrl(config, start, end), {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`
+    },
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    return [];
+  }
+
+  const payload = await response.json();
+  const rows = parseArrayPayload(payload);
+  const records: UsageRecord[] = [];
+
+  for (const row of rows) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+
+    const raw = row as Record<string, unknown>;
+    const model = String(raw.model ?? "moltbook-model");
+    const inputTokens = normalizeNumber(raw.input_tokens);
+    const outputTokens = normalizeNumber(raw.output_tokens);
+    const totalTokens = normalizeNumber(raw.total_tokens) || inputTokens + outputTokens;
+    const agentId = String(raw.agent_id ?? raw.workflow_id ?? "moltbook-unattributed");
+    const workflow = String(raw.workflow ?? raw.pipeline ?? "unattributed");
+    const timestamp = String(raw.timestamp ?? new Date().toISOString());
+    const maybeCost = normalizeNumber(raw.cost_usd ?? raw.cost);
+    const costUsd = maybeCost > 0 ? maybeCost : estimateCostUsd("moltbook", model, inputTokens, outputTokens);
+
+    const base = {
+      provider: "moltbook" as const,
+      model,
+      workflow,
+      agentId,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      costUsd,
+      timestamp,
+      source: "provider_api" as const
+    };
+
+    records.push({
+      ...base,
+      id: makeUsageId(base)
     });
-
-    if (!response.ok) {
-      return synthesizeUsage("moltbook", "moltbook-agent-v1");
-    }
-
-    const payload = MoltbookResponse.parse(await response.json());
-    if (payload.usage.length === 0) {
-      return synthesizeUsage("moltbook", "moltbook-agent-v1");
-    }
-
-    return payload.usage.map((entry) => ({
-      provider: "moltbook",
-      model: entry.model,
-      workflow: entry.workflow,
-      agentName: entry.agentName,
-      inputTokens: entry.inputTokens,
-      outputTokens: entry.outputTokens,
-      totalCostUsd: entry.totalCostUsd,
-      capturedAt: entry.capturedAt,
-    }));
-  } catch {
-    return synthesizeUsage("moltbook", "moltbook-agent-v1");
   }
+
+  return records;
 }

@@ -1,46 +1,81 @@
 "use client";
 
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Legend,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+  Bar,
+  BarChart
+} from "recharts";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface CostChartProps {
-  data: Array<{ date: string; cost: number }>;
+  daily: Array<{ day: string; costUsd: number; tokens: number }>;
+  providerBreakdown: Array<{ provider: string; costUsd: number }>;
 }
 
-export function CostChart({ data }: CostChartProps) {
+export function CostChart({ daily, providerBreakdown }: CostChartProps) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>14-Day Cost Trend</CardTitle>
-        <CardDescription>Watch token spend spikes before they become monthly surprises.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="h-[300px] w-full">
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card>
+        <CardHeader>
+          <CardTitle>Daily Spend</CardTitle>
+          <CardDescription>USD burn across all providers over the selected period.</CardDescription>
+        </CardHeader>
+        <CardContent className="h-[280px]">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data}>
+            <AreaChart data={daily}>
               <defs>
-                <linearGradient id="cost" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#2f81f7" stopOpacity={0.6} />
-                  <stop offset="100%" stopColor="#2f81f7" stopOpacity={0.05} />
+                <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#2ea043" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="#2ea043" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#30363d" />
-              <XAxis dataKey="date" stroke="#9da7b3" />
-              <YAxis stroke="#9da7b3" />
+              <CartesianGrid stroke="#30363d" strokeDasharray="3 3" />
+              <XAxis dataKey="day" stroke="#8b949e" />
+              <YAxis stroke="#8b949e" />
               <Tooltip
                 contentStyle={{
                   background: "#161b22",
                   border: "1px solid #30363d",
-                  borderRadius: 8,
-                  color: "#e6edf3",
+                  borderRadius: 8
                 }}
-                formatter={(value) => [`$${Number(value ?? 0).toFixed(2)}`, "Cost"]}
               />
-              <Area type="monotone" dataKey="cost" stroke="#2f81f7" fill="url(#cost)" strokeWidth={2} />
+              <Area type="monotone" dataKey="costUsd" stroke="#3fb950" fill="url(#costGradient)" strokeWidth={2} />
             </AreaChart>
           </ResponsiveContainer>
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Provider Mix</CardTitle>
+          <CardDescription>Current period spend by provider.</CardDescription>
+        </CardHeader>
+        <CardContent className="h-[280px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={providerBreakdown}>
+              <CartesianGrid stroke="#30363d" strokeDasharray="3 3" />
+              <XAxis dataKey="provider" stroke="#8b949e" />
+              <YAxis stroke="#8b949e" />
+              <Tooltip
+                contentStyle={{
+                  background: "#161b22",
+                  border: "1px solid #30363d",
+                  borderRadius: 8
+                }}
+              />
+              <Legend />
+              <Bar dataKey="costUsd" fill="#58a6ff" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+    </div>
   );
 }

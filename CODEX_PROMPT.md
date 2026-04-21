@@ -11,26 +11,28 @@ NICHE: ai-agent-tools
 PRICE: $$19/mo
 
 ARCHITECTURE SPEC:
-A Next.js dashboard that connects to multiple AI provider APIs to fetch usage data, aggregates costs per agent/workflow using API key tagging or request metadata, and provides real-time cost monitoring with Discord alerts. Uses PostgreSQL to store historical data and Lemon Squeezy for subscription management.
+A Next.js dashboard that connects to multiple AI provider APIs to track token usage per agent/workflow. Features real-time cost monitoring, budget alerts via Discord webhooks, and detailed breakdowns by provider, model, and time period.
 
 PLANNED FILES:
 - app/page.tsx
 - app/dashboard/page.tsx
-- app/api/providers/openai/route.ts
-- app/api/providers/anthropic/route.ts
-- app/api/providers/google/route.ts
-- app/api/providers/moltbook/route.ts
-- app/api/webhooks/lemon-squeezy/route.ts
-- app/api/alerts/discord/route.ts
-- components/CostChart.tsx
-- components/AgentTable.tsx
-- components/AlertSettings.tsx
-- lib/providers.ts
+- app/api/providers/route.ts
+- app/api/usage/route.ts
+- app/api/alerts/route.ts
+- app/api/webhooks/lemonsqueezy/route.ts
+- components/dashboard/CostChart.tsx
+- components/dashboard/AgentList.tsx
+- components/dashboard/AlertSettings.tsx
+- components/providers/ProviderSetup.tsx
+- lib/providers/openai.ts
+- lib/providers/anthropic.ts
+- lib/providers/google.ts
+- lib/providers/moltbook.ts
 - lib/database.ts
+- lib/lemonsqueezy.ts
 - lib/discord.ts
-- prisma/schema.prisma
 
-DEPENDENCIES: next, react, tailwindcss, @prisma/client, prisma, recharts, @lemonsqueezy/lemonsqueezy.js, discord.js, openai, @anthropic-ai/sdk, @google-ai/generativelanguage, zod, next-auth, bcryptjs
+DEPENDENCIES: next, tailwindcss, prisma, @prisma/client, recharts, openai, @anthropic-ai/sdk, @google/generative-ai, @lemonsqueezy/lemonsqueezy.js, discord.js, next-auth, zod, date-fns, lucide-react
 
 REQUIREMENTS:
 - Next.js 15 with App Router (app/ directory)
@@ -38,7 +40,7 @@ REQUIREMENTS:
 - Tailwind CSS v4
 - shadcn/ui components (npx shadcn@latest init, then add needed components)
 - Dark theme ONLY — background #0d1117, no light mode
-- Lemon Squeezy checkout overlay for payments
+- Stripe Payment Link for payments (hosted checkout — use the URL directly as the Buy button href)
 - Landing page that converts: hero, problem, solution, pricing, FAQ
 - The actual tool/feature behind a paywall (cookie-based access after purchase)
 - Mobile responsive
@@ -58,9 +60,13 @@ REQUIREMENTS:
   to package.json dependencies and re-run npm install + npm run build until it passes.
 
 ENVIRONMENT VARIABLES (create .env.example):
-- NEXT_PUBLIC_LEMON_SQUEEZY_STORE_ID
-- NEXT_PUBLIC_LEMON_SQUEEZY_PRODUCT_ID
-- LEMON_SQUEEZY_WEBHOOK_SECRET
+- NEXT_PUBLIC_STRIPE_PAYMENT_LINK  (full URL, e.g. https://buy.stripe.com/test_XXX)
+- NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY  (pk_test_... or pk_live_...)
+- STRIPE_WEBHOOK_SECRET  (set when webhook is wired)
+
+BUY BUTTON RULE: the Buy button's href MUST be `process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK`
+used as-is — do NOT construct URLs from a product ID, do NOT prepend any base URL,
+do NOT wrap it in an embed iframe. The link opens Stripe's hosted checkout directly.
 
 After creating all files:
 1. Run: npm install

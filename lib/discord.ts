@@ -1,36 +1,40 @@
-export async function sendDiscordBudgetAlert(input: {
-  agentId: string;
-  monthlySpendUsd: number;
-  monthlyBudgetUsd: number;
-}) {
-  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-
-  if (!webhookUrl) {
-    return { sent: false, reason: "DISCORD_WEBHOOK_URL is not configured." };
+export async function sendDiscordBudgetAlert(
+  webhookUrl: string,
+  payload: {
+    agentId: string;
+    month: string;
+    spendUsd: number;
+    budgetUsd: number;
+    providerBreakdown: Record<string, number>;
   }
+): Promise<void> {
+  const breakdown = Object.entries(payload.providerBreakdown)
+    .sort((a, b) => b[1] - a[1])
+    .map(([provider, value]) => `• ${provider}: $${value.toFixed(2)}`)
+    .join("\n");
 
   const content = [
-    "🚨 **Budget Alert: Agent overspend detected**",
-    `Agent: \`${input.agentId}\``,
-    `Monthly spend: **$${input.monthlySpendUsd.toFixed(2)}**`,
-    `Budget: **$${input.monthlyBudgetUsd.toFixed(2)}**`,
-    "Review recent workflow usage in Token Cost Tracker dashboard."
+    `🚨 Agent budget exceeded for ${payload.month}`,
+    `Agent: ${payload.agentId}`,
+    `Spend: $${payload.spendUsd.toFixed(2)} (budget: $${payload.budgetUsd.toFixed(2)})`,
+    "",
+    "Provider breakdown:",
+    breakdown || "• No provider-level breakdown available"
   ].join("\n");
 
   const response = await fetch(webhookUrl, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "content-type": "application/json"
     },
     body: JSON.stringify({
-      username: "Token Cost Tracker",
-      content
+      content,
+      username: "Token Cost Tracker"
     })
   });
 
   if (!response.ok) {
-    throw new Error(`Discord webhook failed with status ${response.status}`);
+    const text = await response.text();
+    throw new Error(`Discord webhook failed: ${response.status} ${text}`);
   }
-
-  return { sent: true };
 }
