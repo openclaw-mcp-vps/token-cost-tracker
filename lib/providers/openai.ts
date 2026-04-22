@@ -1,80 +1,113 @@
-import OpenAI from "openai";
-import { ProviderConfig, UsageRecord } from "@/lib/types";
-import { estimateCostUsd } from "@/lib/providers/pricing";
-import { makeUsageId, normalizeNumber } from "@/lib/providers/common";
+import { estimateCostUsd } from "@/lib/pricing";
+import type { ProviderSyncOptions, ProviderSyncResult, UsageEvent } from "@/lib/types";
 
-interface OpenAIUsageBucket {
-  start_time?: number;
-  end_time?: number;
-  results?: Array<Record<string, unknown>>;
+function asNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
-export async function fetchOpenAIUsage(config: ProviderConfig, start: Date, end: Date): Promise<UsageRecord[]> {
-  if (!config.apiKey || !config.enabled) {
+function parseOpenAIResponse(raw: unknown): UsageEvent[] {
+  if (!raw || typeof raw !== "object") {
     return [];
   }
 
-  const client = new OpenAI({ apiKey: config.apiKey, organization: config.organizationId });
+  const payload = raw as Record<string, unknown>;
+  const rows = Array.isArray(payload.data) ? payload.data : [];
+  const events: UsageEvent[] = [];
 
-  try {
-    await client.models.list();
-  } catch {
-    return [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+
+    const item = row as Record<string, unknown>;
+    const model = typeof item.model === "string" ? item.model : "unknown-model";
+    const timestampUnix = asNumber(item.aggregation_timestamp) || asNumber(item.timestamp);
+    const timestamp = timestampUnix > 0 ? new Date(timestampUnix * 1000).toISOString() : new Date().toISOString();
+
+    const inputTokens = asNumber(item.input_tokens) || asNumber(item.n_context_tokens_total);
+    const outputTokens = asNumber(item.output_tokens) || asNumber(item.n_generated_tokens_total);
+    const totalTokens = asNumber(item.total_tokens) || inputTokens + outputTokens;
+    const requests = Math.max(1, asNumber(item.num_model_requests) || asNumber(item.n_requests) || 1);
+
+    const rawCost = asNumber(item.cost_usd) || asNumber(item.cost);
+    const costUsd = rawCost > 0 ? rawCost : estimateCostUsd("openai", model, inputTokens, outputTokens);
+
+    const workflow =
+      (typeof item.project_id === "string" && item.project_id) ||
+      (typeof item.project_name === "string" && item.project_name) ||
+      "default-workflow";
+
+    const agent =
+      (typeof item.api_key_name === "string" && item.api_key_name) ||
+      (typeof item.user_id === "string" && item.user_id) ||
+      "unattributed-agent";
+
+    events.push({
+      id: `openai-${timestampUnix || Date.now()}-${model}-${agent}-${workflow}`,
+      timestamp,
+      provider: "openai",
+      model,
+      workflow,
+      agent,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      costUsd,
+      requests,
+      source: "provider_sync",
+    });
   }
 
-  const url = new URL("https://api.openai.com/v1/organization/usage/completions");
-  url.searchParams.set("start_time", String(Math.floor(start.getTime() / 1000)));
-  url.searchParams.set("end_time", String(Math.floor(end.getTime() / 1000)));
-  url.searchParams.set("bucket_width", "1d");
+  return events;
+}
 
-  const response = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      ...(config.organizationId ? { "OpenAI-Organization": config.organizationId } : {})
+export async function fetchOpenAIUsage(options: ProviderSyncOptions): Promise<ProviderSyncResult> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return {
+      provider: "openai",
+      events: [],
+      connected: false,
+      error: "Missing OPENAI_API_KEY",
+    };
+  }
+
+  const startUnix = Math.floor(options.start.getTime() / 1000);
+  const endUnix = Math.floor(options.end.getTime() / 1000);
+
+  const response = await fetch(
+    `https://api.openai.com/v1/organization/usage/completions?start_time=${startUnix}&end_time=${endUnix}`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...(process.env.OPENAI_ORG_ID ? { "OpenAI-Organization": process.env.OPENAI_ORG_ID } : {}),
+      },
+      cache: "no-store",
     },
-    cache: "no-store"
-  });
+  );
 
   if (!response.ok) {
-    return [];
+    const body = await response.text();
+    return {
+      provider: "openai",
+      events: [],
+      connected: false,
+      error: `OpenAI usage API returned ${response.status}: ${body.slice(0, 240)}`,
+    };
   }
 
-  const payload = (await response.json()) as { data?: OpenAIUsageBucket[] };
-  const records: UsageRecord[] = [];
+  const payload = (await response.json()) as unknown;
 
-  for (const bucket of payload.data ?? []) {
-    const bucketTimestamp = new Date((bucket.start_time ?? Math.floor(Date.now() / 1000)) * 1000).toISOString();
-
-    for (const result of bucket.results ?? []) {
-      const model = String(result.model ?? "openai-unknown");
-      const inputTokens = normalizeNumber(result.input_tokens ?? result.n_context_tokens_total);
-      const outputTokens = normalizeNumber(result.output_tokens ?? result.n_generated_tokens_total);
-      const totalTokens = normalizeNumber(result.total_tokens) || inputTokens + outputTokens;
-      const agentId = String(result.project_id ?? result.api_key_id ?? result.user_id ?? "openai-unattributed");
-      const workflow = String(result.operation ?? result.endpoint ?? "unattributed");
-      const maybeCost = normalizeNumber(result.cost_usd);
-      const costUsd = maybeCost > 0 ? maybeCost : estimateCostUsd("openai", model, inputTokens, outputTokens);
-
-      const base = {
-        provider: "openai" as const,
-        model,
-        workflow,
-        agentId,
-        inputTokens,
-        outputTokens,
-        totalTokens,
-        costUsd,
-        timestamp: bucketTimestamp,
-        source: "provider_api" as const
-      };
-
-      records.push({
-        ...base,
-        id: makeUsageId(base)
-      });
-    }
-  }
-
-  return records;
+  return {
+    provider: "openai",
+    events: parseOpenAIResponse(payload),
+    connected: true,
+  };
 }

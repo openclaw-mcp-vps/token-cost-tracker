@@ -1,94 +1,113 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
-import { getProviderConfigFromEnv, readDb, writeDb } from "@/lib/database";
-import { ProviderId } from "@/lib/types";
-import { maskApiKey } from "@/lib/utils";
 
-const providerSchema = z.object({
-  provider: z.enum(["openai", "anthropic", "google", "moltbook"]),
-  apiKey: z.string().min(10),
-  enabled: z.boolean().default(true),
-  baseUrl: z.string().url().optional(),
-  organizationId: z.string().optional()
-});
+import { getYesterdayUtcRange } from "@/lib/analytics";
+import { requirePaidAccess } from "@/lib/api-auth";
+import { addUsageEvents, listProviderStatus, setProviderStatus } from "@/lib/database";
+import { syncAllProviders } from "@/lib/providers/sync";
+import { PROVIDERS, type ProviderName, type ProviderStatus } from "@/lib/types";
 
-function getEffectiveProvider(dbProvider: Awaited<ReturnType<typeof readDb>>["providers"][ProviderId], providerId: ProviderId) {
-  return dbProvider ?? getProviderConfigFromEnv(providerId);
+export const runtime = "nodejs";
+
+const providerEnvMap: Record<ProviderName, string> = {
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  google: "GOOGLE_API_KEY",
+  moltbook: "MOLTBOOK_API_KEY",
+};
+
+function withConfiguredFlags(statuses: ProviderStatus[]): ProviderStatus[] {
+  return statuses.map((status) => ({
+    ...status,
+    configured: Boolean(process.env[providerEnvMap[status.provider]]),
+  }));
 }
 
-export async function GET() {
-  const db = await readDb();
+async function runSync(): Promise<{
+  providers: ProviderStatus[];
+  addedEvents: number;
+  errors: Array<{ provider: string; error: string }>;
+}> {
+  const { start, end } = getYesterdayUtcRange();
+  const results = await syncAllProviders(start, end);
+  const now = new Date().toISOString();
 
-  const providers = (Object.keys(db.providers) as ProviderId[]).map((providerId) => {
-    const config = getEffectiveProvider(db.providers[providerId], providerId);
+  const events = results.flatMap((result) => result.events);
+  const insertResult = await addUsageEvents(events);
+  const errors: Array<{ provider: string; error: string }> = [];
 
-    if (!config) {
-      return {
-        provider: providerId,
+  for (const provider of PROVIDERS) {
+    const result = results.find((entry) => entry.provider === provider);
+    const configured = Boolean(process.env[providerEnvMap[provider]]);
+
+    if (!result) {
+      await setProviderStatus(provider, {
+        configured,
         connected: false,
-        enabled: false,
-        updatedAt: null,
-        apiKeyMasked: null,
-        baseUrl: null,
-        organizationId: null
-      };
+        lastSyncAt: now,
+        lastError: "Provider did not return a result",
+      });
+      errors.push({ provider, error: "Provider did not return a result" });
+      continue;
     }
 
-    return {
-      provider: providerId,
-      connected: true,
-      enabled: config.enabled,
-      updatedAt: config.updatedAt,
-      apiKeyMasked: maskApiKey(config.apiKey),
-      baseUrl: config.baseUrl ?? null,
-      organizationId: config.organizationId ?? null
-    };
-  });
+    if (result.error) {
+      errors.push({ provider, error: result.error });
+    }
 
+    await setProviderStatus(provider, {
+      configured,
+      connected: result.connected,
+      lastSyncAt: now,
+      lastError: result.error ?? null,
+    });
+  }
+
+  const providers = withConfiguredFlags(await listProviderStatus());
+  return {
+    providers,
+    addedEvents: insertResult.added,
+    errors,
+  };
+}
+
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  const forbidden = requirePaidAccess(request);
+  if (forbidden) {
+    return forbidden;
+  }
+
+  const sync = request.nextUrl.searchParams.get("sync") === "1";
+  if (sync) {
+    const payload = await runSync();
+    return NextResponse.json(payload);
+  }
+
+  const providers = withConfiguredFlags(await listProviderStatus());
   return NextResponse.json({ providers });
 }
 
-export async function POST(request: NextRequest) {
-  const parsed = providerSchema.safeParse(await request.json());
-
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid provider payload", details: parsed.error.flatten() }, { status: 400 });
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const forbidden = requirePaidAccess(request);
+  if (forbidden) {
+    return forbidden;
   }
 
-  const body = parsed.data;
+  let shouldSync = true;
 
-  await writeDb((db) => ({
-    ...db,
-    providers: {
-      ...db.providers,
-      [body.provider]: {
-        provider: body.provider,
-        apiKey: body.apiKey,
-        enabled: body.enabled,
-        baseUrl: body.baseUrl,
-        organizationId: body.organizationId,
-        updatedAt: new Date().toISOString()
-      }
+  try {
+    const body = (await request.json()) as { sync?: boolean };
+    if (typeof body.sync === "boolean") {
+      shouldSync = body.sync;
     }
-  }));
-
-  return NextResponse.json({ success: true });
-}
-
-export async function DELETE(request: NextRequest) {
-  const provider = request.nextUrl.searchParams.get("provider") as ProviderId | null;
-
-  if (!provider || !["openai", "anthropic", "google", "moltbook"].includes(provider)) {
-    return NextResponse.json({ error: "Missing provider query param" }, { status: 400 });
+  } catch {
+    shouldSync = true;
   }
 
-  await writeDb((db) => ({
-    ...db,
-    providers: {
-      ...db.providers,
-      [provider]: null
-    }
-  }));
+  if (!shouldSync) {
+    const providers = withConfiguredFlags(await listProviderStatus());
+    return NextResponse.json({ providers, addedEvents: 0, errors: [] });
+  }
 
-  return NextResponse.json({ success: true });
+  const payload = await runSync();
+  return NextResponse.json(payload);
 }

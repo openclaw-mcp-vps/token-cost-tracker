@@ -1,50 +1,105 @@
-export type ProviderId = "openai" | "anthropic" | "google" | "moltbook";
+export const PROVIDERS = ["openai", "anthropic", "google", "moltbook"] as const;
 
-export interface UsageRecord {
+export type ProviderName = (typeof PROVIDERS)[number];
+
+export type UsageSource = "provider_sync" | "agent_ingest";
+
+export interface UsageEvent {
   id: string;
-  provider: ProviderId;
+  timestamp: string;
+  provider: ProviderName;
   model: string;
   workflow: string;
-  agentId: string;
+  agent: string;
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
   costUsd: number;
-  timestamp: string;
-  source: "provider_api" | "manual";
+  requests: number;
+  source: UsageSource;
+  metadata?: Record<string, string | number | boolean>;
 }
 
-export interface ProviderConfig {
-  provider: ProviderId;
-  apiKey: string;
-  enabled: boolean;
-  organizationId?: string;
-  baseUrl?: string;
-  updatedAt: string;
+export interface ProviderStatus {
+  provider: ProviderName;
+  configured: boolean;
+  connected: boolean;
+  lastSyncAt: string | null;
+  lastError: string | null;
 }
 
 export interface AlertSettings {
-  enabled: boolean;
-  monthlyBudgetUsd: number;
-  discordWebhookUrl?: string;
-  notifiedAgentMonths: string[];
+  monthlyAgentBudgetUsd: number;
+  monthlyWorkspaceBudgetUsd: number;
+  discordWebhookUrl: string | null;
 }
 
 export interface Entitlement {
   email: string;
-  createdAt: string;
-  source: "stripe_webhook" | "manual_dev";
+  source: "stripe_webhook";
+  checkoutSessionId: string;
+  customerId: string | null;
+  purchasedAt: string;
 }
 
-export interface AppDatabase {
-  usageRecords: UsageRecord[];
-  providers: Record<ProviderId, ProviderConfig | null>;
+export interface DataStore {
+  usageEvents: UsageEvent[];
+  providerStatus: Record<ProviderName, ProviderStatus>;
   alertSettings: AlertSettings;
   entitlements: Entitlement[];
+  sentAlerts: string[];
 }
 
-export interface UsageQuery {
+export interface ProviderSyncOptions {
   start: Date;
   end: Date;
-  includeFreshPull: boolean;
+}
+
+export interface ProviderSyncResult {
+  provider: ProviderName;
+  events: UsageEvent[];
+  connected: boolean;
+  error?: string;
+}
+
+export interface DashboardSummary {
+  totals: {
+    costUsd: number;
+    totalTokens: number;
+    requests: number;
+  };
+  daily: Array<{
+    date: string;
+    costUsd: number;
+    totalTokens: number;
+    requests: number;
+  }>;
+  providers: Array<{
+    provider: ProviderName;
+    costUsd: number;
+    totalTokens: number;
+    requests: number;
+  }>;
+  models: Array<{
+    model: string;
+    provider: ProviderName;
+    costUsd: number;
+    totalTokens: number;
+    requests: number;
+  }>;
+  workflows: Array<{
+    workflow: string;
+    costUsd: number;
+    totalTokens: number;
+    requests: number;
+  }>;
+  agents: Array<{
+    agent: string;
+    workflow: string;
+    provider: ProviderName;
+    model: string;
+    costUsd: number;
+    totalTokens: number;
+    requests: number;
+  }>;
 }

@@ -1,155 +1,155 @@
-import { format, subDays } from "date-fns";
-import { UsageRecord } from "@/lib/types";
-import { roundUsd } from "@/lib/utils";
+import { type DashboardSummary, type ProviderName, type UsageEvent } from "@/lib/types";
 
-export interface AggregatedUsage {
-  totalCostUsd: number;
-  totalTokens: number;
-  byDay: Array<{ day: string; costUsd: number; tokens: number }>;
-  byAgent: Array<{ agentId: string; costUsd: number; tokens: number; providers: Record<string, number> }>;
-  byProvider: Array<{ provider: string; costUsd: number; tokens: number }>;
-  byModel: Array<{ model: string; costUsd: number; tokens: number }>;
-  byWorkflow: Array<{ workflow: string; costUsd: number; tokens: number }>;
+export function toDateKey(isoDate: string): string {
+  return isoDate.slice(0, 10);
 }
 
-export interface RunawayAgent {
-  agentId: string;
-  yesterdayCostUsd: number;
-  baselineCostUsd: number;
-  jumpFactor: number;
+export function getUtcDayRange(daysBack: number): { start: Date; end: Date } {
+  const end = new Date();
+  end.setUTCHours(23, 59, 59, 999);
+
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - (daysBack - 1));
+  start.setUTCHours(0, 0, 0, 0);
+
+  return { start, end };
 }
 
-function sumNumberMap(map: Map<string, number>): Array<{ key: string; value: number }> {
-  return Array.from(map.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([key, value]) => ({ key, value: roundUsd(value) }));
+export function getYesterdayUtcRange(): { start: Date; end: Date } {
+  const end = new Date();
+  end.setUTCDate(end.getUTCDate() - 1);
+  end.setUTCHours(23, 59, 59, 999);
+
+  const start = new Date(end);
+  start.setUTCHours(0, 0, 0, 0);
+
+  return { start, end };
 }
 
-export function aggregateUsage(records: UsageRecord[]): AggregatedUsage {
-  const byDayCost = new Map<string, number>();
-  const byDayTokens = new Map<string, number>();
-  const byProviderCost = new Map<string, number>();
-  const byProviderTokens = new Map<string, number>();
-  const byModelCost = new Map<string, number>();
-  const byModelTokens = new Map<string, number>();
-  const byWorkflowCost = new Map<string, number>();
-  const byWorkflowTokens = new Map<string, number>();
+export function filterEventsByDateRange(events: UsageEvent[], start: Date, end: Date): UsageEvent[] {
+  return events.filter((event) => {
+    const ts = new Date(event.timestamp).getTime();
+    return ts >= start.getTime() && ts <= end.getTime();
+  });
+}
 
-  const agentTotals = new Map<string, { cost: number; tokens: number; providers: Record<string, number> }>();
+export function summarizeUsage(events: UsageEvent[]): DashboardSummary {
+  const dailyMap = new Map<string, { costUsd: number; totalTokens: number; requests: number }>();
+  const providerMap = new Map<ProviderName, { costUsd: number; totalTokens: number; requests: number }>();
+  const modelMap = new Map<string, { model: string; provider: ProviderName; costUsd: number; totalTokens: number; requests: number }>();
+  const workflowMap = new Map<string, { workflow: string; costUsd: number; totalTokens: number; requests: number }>();
+  const agentMap = new Map<string, { agent: string; workflow: string; provider: ProviderName; model: string; costUsd: number; totalTokens: number; requests: number }>();
 
-  let totalCostUsd = 0;
+  let totalCost = 0;
   let totalTokens = 0;
+  let totalRequests = 0;
 
-  for (const record of records) {
-    const day = format(new Date(record.timestamp), "yyyy-MM-dd");
+  for (const event of events) {
+    totalCost += event.costUsd;
+    totalTokens += event.totalTokens;
+    totalRequests += event.requests;
 
-    totalCostUsd += record.costUsd;
-    totalTokens += record.totalTokens;
+    const day = toDateKey(event.timestamp);
+    const dayEntry = dailyMap.get(day) ?? { costUsd: 0, totalTokens: 0, requests: 0 };
+    dayEntry.costUsd += event.costUsd;
+    dayEntry.totalTokens += event.totalTokens;
+    dayEntry.requests += event.requests;
+    dailyMap.set(day, dayEntry);
 
-    byDayCost.set(day, (byDayCost.get(day) ?? 0) + record.costUsd);
-    byDayTokens.set(day, (byDayTokens.get(day) ?? 0) + record.totalTokens);
+    const providerEntry = providerMap.get(event.provider) ?? { costUsd: 0, totalTokens: 0, requests: 0 };
+    providerEntry.costUsd += event.costUsd;
+    providerEntry.totalTokens += event.totalTokens;
+    providerEntry.requests += event.requests;
+    providerMap.set(event.provider, providerEntry);
 
-    byProviderCost.set(record.provider, (byProviderCost.get(record.provider) ?? 0) + record.costUsd);
-    byProviderTokens.set(record.provider, (byProviderTokens.get(record.provider) ?? 0) + record.totalTokens);
+    const modelKey = `${event.provider}:${event.model}`;
+    const modelEntry = modelMap.get(modelKey) ?? {
+      model: event.model,
+      provider: event.provider,
+      costUsd: 0,
+      totalTokens: 0,
+      requests: 0,
+    };
+    modelEntry.costUsd += event.costUsd;
+    modelEntry.totalTokens += event.totalTokens;
+    modelEntry.requests += event.requests;
+    modelMap.set(modelKey, modelEntry);
 
-    byModelCost.set(record.model, (byModelCost.get(record.model) ?? 0) + record.costUsd);
-    byModelTokens.set(record.model, (byModelTokens.get(record.model) ?? 0) + record.totalTokens);
+    const workflowEntry = workflowMap.get(event.workflow) ?? {
+      workflow: event.workflow,
+      costUsd: 0,
+      totalTokens: 0,
+      requests: 0,
+    };
+    workflowEntry.costUsd += event.costUsd;
+    workflowEntry.totalTokens += event.totalTokens;
+    workflowEntry.requests += event.requests;
+    workflowMap.set(event.workflow, workflowEntry);
 
-    byWorkflowCost.set(record.workflow, (byWorkflowCost.get(record.workflow) ?? 0) + record.costUsd);
-    byWorkflowTokens.set(record.workflow, (byWorkflowTokens.get(record.workflow) ?? 0) + record.totalTokens);
+    const agentKey = `${event.agent}:${event.workflow}:${event.provider}:${event.model}`;
+    const agentEntry = agentMap.get(agentKey) ?? {
+      agent: event.agent,
+      workflow: event.workflow,
+      provider: event.provider,
+      model: event.model,
+      costUsd: 0,
+      totalTokens: 0,
+      requests: 0,
+    };
 
-    const currentAgent = agentTotals.get(record.agentId) ?? { cost: 0, tokens: 0, providers: {} };
-    currentAgent.cost += record.costUsd;
-    currentAgent.tokens += record.totalTokens;
-    currentAgent.providers[record.provider] = (currentAgent.providers[record.provider] ?? 0) + record.costUsd;
-    agentTotals.set(record.agentId, currentAgent);
+    agentEntry.costUsd += event.costUsd;
+    agentEntry.totalTokens += event.totalTokens;
+    agentEntry.requests += event.requests;
+    agentMap.set(agentKey, agentEntry);
   }
 
   return {
-    totalCostUsd: roundUsd(totalCostUsd),
-    totalTokens,
-    byDay: Array.from(byDayCost.entries())
-      .map(([day, costUsd]) => ({ day, costUsd: roundUsd(costUsd), tokens: Math.round(byDayTokens.get(day) ?? 0) }))
-      .sort((a, b) => (a.day < b.day ? -1 : 1)),
-    byAgent: Array.from(agentTotals.entries())
-      .map(([agentId, totals]) => ({
-        agentId,
-        costUsd: roundUsd(totals.cost),
-        tokens: Math.round(totals.tokens),
-        providers: Object.fromEntries(Object.entries(totals.providers).map(([provider, value]) => [provider, roundUsd(value)]))
+    totals: {
+      costUsd: Number(totalCost.toFixed(4)),
+      totalTokens,
+      requests: totalRequests,
+    },
+    daily: Array.from(dailyMap.entries())
+      .map(([date, value]) => ({
+        date,
+        costUsd: Number(value.costUsd.toFixed(4)),
+        totalTokens: value.totalTokens,
+        requests: value.requests,
+      }))
+      .sort((a, b) => (a.date > b.date ? 1 : -1)),
+    providers: Array.from(providerMap.entries())
+      .map(([provider, value]) => ({
+        provider,
+        costUsd: Number(value.costUsd.toFixed(4)),
+        totalTokens: value.totalTokens,
+        requests: value.requests,
       }))
       .sort((a, b) => b.costUsd - a.costUsd),
-    byProvider: sumNumberMap(byProviderCost).map((entry) => ({
-      provider: entry.key,
-      costUsd: entry.value,
-      tokens: Math.round(byProviderTokens.get(entry.key) ?? 0)
-    })),
-    byModel: sumNumberMap(byModelCost).map((entry) => ({
-      model: entry.key,
-      costUsd: entry.value,
-      tokens: Math.round(byModelTokens.get(entry.key) ?? 0)
-    })),
-    byWorkflow: sumNumberMap(byWorkflowCost).map((entry) => ({
-      workflow: entry.key,
-      costUsd: entry.value,
-      tokens: Math.round(byWorkflowTokens.get(entry.key) ?? 0)
-    }))
+    models: Array.from(modelMap.values())
+      .map((entry) => ({
+        ...entry,
+        costUsd: Number(entry.costUsd.toFixed(4)),
+      }))
+      .sort((a, b) => b.costUsd - a.costUsd),
+    workflows: Array.from(workflowMap.values())
+      .map((entry) => ({
+        ...entry,
+        costUsd: Number(entry.costUsd.toFixed(4)),
+      }))
+      .sort((a, b) => b.costUsd - a.costUsd),
+    agents: Array.from(agentMap.values())
+      .map((entry) => ({
+        ...entry,
+        costUsd: Number(entry.costUsd.toFixed(4)),
+      }))
+      .sort((a, b) => b.costUsd - a.costUsd),
   };
 }
 
-export function detectRunawayAgents(records: UsageRecord[]): RunawayAgent[] {
-  const yesterday = format(subDays(new Date(), 1), "yyyy-MM-dd");
-  const baselineDays = new Set(Array.from({ length: 7 }, (_, i) => format(subDays(new Date(), i + 2), "yyyy-MM-dd")));
-
-  const yesterdayTotals = new Map<string, number>();
-  const baselineTotals = new Map<string, number>();
-
-  for (const record of records) {
-    const day = format(new Date(record.timestamp), "yyyy-MM-dd");
-
-    if (day === yesterday) {
-      yesterdayTotals.set(record.agentId, (yesterdayTotals.get(record.agentId) ?? 0) + record.costUsd);
-    }
-
-    if (baselineDays.has(day)) {
-      baselineTotals.set(record.agentId, (baselineTotals.get(record.agentId) ?? 0) + record.costUsd);
-    }
-  }
-
-  const runaway: RunawayAgent[] = [];
-
-  for (const [agentId, yCost] of yesterdayTotals.entries()) {
-    const baselineTotal = baselineTotals.get(agentId) ?? 0;
-    const baselineAvg = baselineTotal / 7;
-
-    if (yCost >= 10 && baselineAvg > 0 && yCost / baselineAvg >= 2) {
-      runaway.push({
-        agentId,
-        yesterdayCostUsd: roundUsd(yCost),
-        baselineCostUsd: roundUsd(baselineAvg),
-        jumpFactor: Number((yCost / baselineAvg).toFixed(2))
-      });
-    }
-  }
-
-  return runaway.sort((a, b) => b.yesterdayCostUsd - a.yesterdayCostUsd);
-}
-
-export function monthlySpendByAgent(records: UsageRecord[]): Map<string, { total: number; providerBreakdown: Record<string, number> }> {
-  const month = format(new Date(), "yyyy-MM");
-  const totals = new Map<string, { total: number; providerBreakdown: Record<string, number> }>();
-
-  for (const record of records) {
-    const recordMonth = format(new Date(record.timestamp), "yyyy-MM");
-    if (recordMonth !== month) {
-      continue;
-    }
-
-    const item = totals.get(record.agentId) ?? { total: 0, providerBreakdown: {} };
-    item.total += record.costUsd;
-    item.providerBreakdown[record.provider] = (item.providerBreakdown[record.provider] ?? 0) + record.costUsd;
-    totals.set(record.agentId, item);
-  }
-
-  return totals;
+export function getCurrentMonthRange(): { start: Date; end: Date; monthKey: string } {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+  const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  return { start, end, monthKey };
 }

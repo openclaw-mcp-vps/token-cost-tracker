@@ -1,53 +1,84 @@
 "use client";
 
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-  Bar,
-  BarChart
-} from "recharts";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Bar, BarChart, CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-interface CostChartProps {
-  daily: Array<{ day: string; costUsd: number; tokens: number }>;
-  providerBreakdown: Array<{ provider: string; costUsd: number }>;
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { toCurrency, formatInt } from "@/lib/utils";
+
+interface CostPoint {
+  date: string;
+  costUsd: number;
+  totalTokens: number;
+  requests: number;
 }
 
-export function CostChart({ daily, providerBreakdown }: CostChartProps) {
+interface ProviderPoint {
+  provider: string;
+  costUsd: number;
+  totalTokens: number;
+}
+
+interface CostChartProps {
+  daily: CostPoint[];
+  providers: ProviderPoint[];
+}
+
+export function CostChart({ daily, providers }: CostChartProps): React.JSX.Element {
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
-      <Card>
+    <div className="grid gap-4 lg:grid-cols-3">
+      <Card className="lg:col-span-2">
         <CardHeader>
-          <CardTitle>Daily Spend</CardTitle>
-          <CardDescription>USD burn across all providers over the selected period.</CardDescription>
+          <CardTitle>Daily Spend Curve</CardTitle>
+          <CardDescription>Track spikes before they become month-end surprises.</CardDescription>
         </CardHeader>
-        <CardContent className="h-[280px]">
+        <CardContent className="h-[300px]">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={daily}>
-              <defs>
-                <linearGradient id="costGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#2ea043" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="#2ea043" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="#30363d" strokeDasharray="3 3" />
-              <XAxis dataKey="day" stroke="#8b949e" />
-              <YAxis stroke="#8b949e" />
+            <LineChart data={daily}>
+              <CartesianGrid stroke="#213046" strokeDasharray="3 3" />
+              <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} />
+              <YAxis
+                stroke="#94a3b8"
+                fontSize={12}
+                tickFormatter={(value) => `$${value}`}
+                width={50}
+              />
               <Tooltip
                 contentStyle={{
-                  background: "#161b22",
-                  border: "1px solid #30363d",
-                  borderRadius: 8
+                  background: "#0b1624",
+                  border: "1px solid #223247",
+                  borderRadius: 10,
+                  color: "#e2e8f0",
+                }}
+                formatter={(value: number, name: string) => {
+                  if (name === "costUsd") {
+                    return [toCurrency(value), "Cost"];
+                  }
+                  if (name === "totalTokens") {
+                    return [formatInt(value), "Tokens"];
+                  }
+                  return [value, name];
                 }}
               />
-              <Area type="monotone" dataKey="costUsd" stroke="#3fb950" fill="url(#costGradient)" strokeWidth={2} />
-            </AreaChart>
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="costUsd"
+                name="Daily Cost"
+                stroke="#f97316"
+                strokeWidth={2.5}
+                dot={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="totalTokens"
+                name="Daily Tokens"
+                stroke="#22d3ee"
+                strokeWidth={2}
+                dot={false}
+                yAxisId={1}
+              />
+              <YAxis yAxisId={1} hide />
+            </LineChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
@@ -55,23 +86,35 @@ export function CostChart({ daily, providerBreakdown }: CostChartProps) {
       <Card>
         <CardHeader>
           <CardTitle>Provider Mix</CardTitle>
-          <CardDescription>Current period spend by provider.</CardDescription>
+          <CardDescription>Compare where your spend is concentrated.</CardDescription>
         </CardHeader>
-        <CardContent className="h-[280px]">
+        <CardContent className="h-[300px]">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={providerBreakdown}>
-              <CartesianGrid stroke="#30363d" strokeDasharray="3 3" />
-              <XAxis dataKey="provider" stroke="#8b949e" />
-              <YAxis stroke="#8b949e" />
+            <BarChart data={providers} layout="vertical" margin={{ left: 20 }}>
+              <CartesianGrid stroke="#213046" strokeDasharray="3 3" />
+              <XAxis type="number" stroke="#94a3b8" fontSize={12} tickFormatter={(value) => `$${value}`} />
+              <YAxis
+                type="category"
+                dataKey="provider"
+                stroke="#94a3b8"
+                fontSize={12}
+                width={90}
+              />
               <Tooltip
                 contentStyle={{
-                  background: "#161b22",
-                  border: "1px solid #30363d",
-                  borderRadius: 8
+                  background: "#0b1624",
+                  border: "1px solid #223247",
+                  borderRadius: 10,
+                  color: "#e2e8f0",
+                }}
+                formatter={(value: number, name: string) => {
+                  if (name === "costUsd") {
+                    return [toCurrency(value), "Cost"];
+                  }
+                  return [formatInt(value), "Tokens"];
                 }}
               />
-              <Legend />
-              <Bar dataKey="costUsd" fill="#58a6ff" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="costUsd" name="Cost" fill="#f97316" radius={[0, 6, 6, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>

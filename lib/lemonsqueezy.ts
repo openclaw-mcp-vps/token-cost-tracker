@@ -1,83 +1,73 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { cookies } from "next/headers";
-import { lemonSqueezySetup } from "@lemonsqueezy/lemonsqueezy.js";
 
-const ACCESS_COOKIE = "tct_access";
-const ACCESS_TTL_DAYS = 31;
-
-export function getStripePaymentLink(): string {
-  return process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK ?? "";
+export interface StripeCheckoutInfo {
+  email: string;
+  checkoutSessionId: string;
+  customerId: string | null;
 }
 
-export function getBillingSecret(): string {
-  return process.env.STRIPE_WEBHOOK_SECRET || "dev-local-secret";
-}
-
-export function createAccessToken(email: string): string {
-  const payload = `${email.toLowerCase()}|${Date.now()}`;
-  const signature = createHmac("sha256", getBillingSecret()).update(payload).digest("hex");
-  return Buffer.from(`${payload}|${signature}`, "utf-8").toString("base64url");
-}
-
-export function verifyAccessToken(token: string | undefined): { valid: boolean; email?: string } {
-  if (!token) {
-    return { valid: false };
+export function verifyStripeWebhookSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+  webhookSecret: string,
+): boolean {
+  if (!signatureHeader || !webhookSecret) {
+    return false;
   }
 
-  try {
-    const decoded = Buffer.from(token, "base64url").toString("utf-8");
-    const [email, issuedAt, signature] = decoded.split("|");
-    if (!email || !issuedAt || !signature) {
-      return { valid: false };
-    }
+  const pieces = signatureHeader.split(",").map((entry) => entry.trim());
+  const timestampPart = pieces.find((entry) => entry.startsWith("t="));
+  const signatureParts = pieces.filter((entry) => entry.startsWith("v1="));
 
-    const payload = `${email}|${issuedAt}`;
-    const expected = createHmac("sha256", getBillingSecret()).update(payload).digest("hex");
-
-    const left = Buffer.from(signature, "utf-8");
-    const right = Buffer.from(expected, "utf-8");
-
-    if (left.length !== right.length || !timingSafeEqual(left, right)) {
-      return { valid: false };
-    }
-
-    const ageMs = Date.now() - Number(issuedAt);
-    const maxAgeMs = ACCESS_TTL_DAYS * 24 * 60 * 60 * 1000;
-
-    if (!Number.isFinite(ageMs) || ageMs > maxAgeMs) {
-      return { valid: false };
-    }
-
-    return { valid: true, email };
-  } catch {
-    return { valid: false };
+  if (!timestampPart || signatureParts.length === 0) {
+    return false;
   }
-}
 
-export async function setAccessCookie(token: string): Promise<void> {
-  const cookieStore = await cookies();
-  cookieStore.set(ACCESS_COOKIE, token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: ACCESS_TTL_DAYS * 24 * 60 * 60
+  const timestamp = timestampPart.slice(2);
+  const signedPayload = `${timestamp}.${rawBody}`;
+  const expected = createHmac("sha256", webhookSecret).update(signedPayload).digest("hex");
+
+  return signatureParts.some((entry) => {
+    const candidate = entry.slice(3);
+    if (candidate.length !== expected.length) {
+      return false;
+    }
+
+    return timingSafeEqual(Buffer.from(candidate), Buffer.from(expected));
   });
 }
 
-export async function clearAccessCookie(): Promise<void> {
-  const cookieStore = await cookies();
-  cookieStore.delete(ACCESS_COOKIE);
-}
-
-export async function getAccessCookie(): Promise<string | undefined> {
-  const cookieStore = await cookies();
-  return cookieStore.get(ACCESS_COOKIE)?.value;
-}
-
-export function initLemonSqueezySdk(): void {
-  const apiKey = process.env.LEMONSQUEEZY_API_KEY;
-  if (apiKey) {
-    lemonSqueezySetup({ apiKey, onError: () => undefined });
+export function extractStripeCheckoutInfo(payload: unknown): StripeCheckoutInfo | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
   }
+
+  const event = payload as Record<string, unknown>;
+  if (event.type !== "checkout.session.completed") {
+    return null;
+  }
+
+  const data = event.data as Record<string, unknown> | undefined;
+  const object = data?.object as Record<string, unknown> | undefined;
+  if (!object) {
+    return null;
+  }
+
+  const customerDetails = object.customer_details as Record<string, unknown> | undefined;
+  const email =
+    (typeof customerDetails?.email === "string" ? customerDetails.email : null) ??
+    (typeof object.customer_email === "string" ? object.customer_email : null);
+
+  if (!email) {
+    return null;
+  }
+
+  const checkoutSessionId = typeof object.id === "string" ? object.id : `session-${Date.now()}`;
+  const customerId = typeof object.customer === "string" ? object.customer : null;
+
+  return {
+    email: email.trim().toLowerCase(),
+    checkoutSessionId,
+    customerId,
+  };
 }

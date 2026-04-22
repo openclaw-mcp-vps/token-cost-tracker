@@ -11,7 +11,7 @@ NICHE: ai-agent-tools
 PRICE: $$19/mo
 
 ARCHITECTURE SPEC:
-A Next.js dashboard that connects to multiple AI provider APIs to track token usage per agent/workflow. Features real-time cost monitoring, budget alerts via Discord webhooks, and detailed breakdowns by provider, model, and time period.
+A Next.js dashboard that connects to multiple AI provider APIs to track token usage per agent/workflow. Features a real-time cost monitoring system with Discord webhooks for budget alerts and detailed analytics breakdowns.
 
 PLANNED FILES:
 - app/page.tsx
@@ -21,18 +21,18 @@ PLANNED FILES:
 - app/api/alerts/route.ts
 - app/api/webhooks/lemonsqueezy/route.ts
 - components/dashboard/CostChart.tsx
-- components/dashboard/AgentList.tsx
+- components/dashboard/AgentTable.tsx
 - components/dashboard/AlertSettings.tsx
 - components/providers/ProviderSetup.tsx
 - lib/providers/openai.ts
 - lib/providers/anthropic.ts
 - lib/providers/google.ts
 - lib/providers/moltbook.ts
+- lib/discord.ts
 - lib/database.ts
 - lib/lemonsqueezy.ts
-- lib/discord.ts
 
-DEPENDENCIES: next, tailwindcss, prisma, @prisma/client, recharts, openai, @anthropic-ai/sdk, @google/generative-ai, @lemonsqueezy/lemonsqueezy.js, discord.js, next-auth, zod, date-fns, lucide-react
+DEPENDENCIES: next, tailwindcss, prisma, @prisma/client, recharts, discord.js, @lemonsqueezy/lemonsqueezy.js, openai, @anthropic-ai/sdk, @google/generative-ai, zod, next-auth, lucide-react
 
 REQUIREMENTS:
 - Next.js 15 with App Router (app/ directory)

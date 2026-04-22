@@ -1,49 +1,98 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { computeBudgetBreaches, evaluateBudgetAlertsAndNotify } from "@/lib/alerts";
-import { readDb, writeDb } from "@/lib/database";
 
-const alertUpdateSchema = z.object({
-  enabled: z.boolean(),
-  monthlyBudgetUsd: z.number().positive(),
-  discordWebhookUrl: z.string().url().optional().or(z.literal(""))
+import { detectBudgetViolations, sendBudgetViolationToDiscord } from "@/lib/alerts";
+import { requirePaidAccess } from "@/lib/api-auth";
+import { filterEventsByDateRange, getCurrentMonthRange, summarizeUsage } from "@/lib/analytics";
+import { getAlertSettings, markAlertSent, readStore, saveAlertSettings, wasAlertSent } from "@/lib/database";
+
+export const runtime = "nodejs";
+
+const alertSchema = z.object({
+  monthlyAgentBudgetUsd: z.number().positive().max(100000),
+  monthlyWorkspaceBudgetUsd: z.number().positive().max(1000000),
+  discordWebhookUrl: z.string().url().nullable(),
 });
 
-export async function GET() {
-  const db = await readDb();
-  const breaches = await computeBudgetBreaches();
+async function getAlertsPayload(): Promise<{
+  settings: {
+    monthlyAgentBudgetUsd: number;
+    monthlyWorkspaceBudgetUsd: number;
+    discordWebhookUrl: string | null;
+  };
+  monthlySpendUsd: number;
+  activeViolations: number;
+}> {
+  const store = await readStore();
+  const settings = await getAlertSettings();
 
-  return NextResponse.json({
-    settings: {
-      enabled: db.alertSettings.enabled,
-      monthlyBudgetUsd: db.alertSettings.monthlyBudgetUsd,
-      hasDiscordWebhook: Boolean(db.alertSettings.discordWebhookUrl)
-    },
-    breaches
-  });
+  const { start, end } = getCurrentMonthRange();
+  const monthlyEvents = filterEventsByDateRange(store.usageEvents, start, end);
+  const monthlySummary = summarizeUsage(monthlyEvents);
+  const violations = detectBudgetViolations(monthlyEvents, settings);
+
+  return {
+    settings,
+    monthlySpendUsd: monthlySummary.totals.costUsd,
+    activeViolations: violations.length,
+  };
 }
 
-export async function POST(request: NextRequest) {
-  const parsed = alertUpdateSchema.safeParse(await request.json());
+async function sendNewViolations(): Promise<number> {
+  const store = await readStore();
+  const settings = await getAlertSettings();
+  const violations = detectBudgetViolations(store.usageEvents, settings);
 
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid alert settings", details: parsed.error.flatten() }, { status: 400 });
+  let sent = 0;
+
+  for (const violation of violations) {
+    if (await wasAlertSent(violation.key)) {
+      continue;
+    }
+
+    const result = await sendBudgetViolationToDiscord(violation, settings.discordWebhookUrl);
+    if (result.success) {
+      await markAlertSent(violation.key);
+      sent += 1;
+    }
   }
 
-  const next = parsed.data;
+  return sent;
+}
 
-  await writeDb((db) => ({
-    ...db,
-    alertSettings: {
-      ...db.alertSettings,
-      enabled: next.enabled,
-      monthlyBudgetUsd: next.monthlyBudgetUsd,
-      discordWebhookUrl: next.discordWebhookUrl || undefined,
-      notifiedAgentMonths: []
-    }
-  }));
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  const forbidden = requirePaidAccess(request);
+  if (forbidden) {
+    return forbidden;
+  }
 
-  const breaches = await evaluateBudgetAlertsAndNotify();
+  return NextResponse.json(await getAlertsPayload());
+}
 
-  return NextResponse.json({ success: true, breaches });
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const forbidden = requirePaidAccess(request);
+  if (forbidden) {
+    return forbidden;
+  }
+
+  const payload = (await request.json()) as unknown;
+  const parsed = alertSchema.safeParse(payload);
+
+  if (!parsed.success) {
+    return NextResponse.json(
+      {
+        error: "Invalid alert settings payload",
+        details: parsed.error.flatten(),
+      },
+      { status: 400 },
+    );
+  }
+
+  await saveAlertSettings(parsed.data);
+  const sent = await sendNewViolations();
+
+  return NextResponse.json({
+    ...(await getAlertsPayload()),
+    sentNewAlerts: sent,
+  });
 }

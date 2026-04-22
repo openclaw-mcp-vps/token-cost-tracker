@@ -1,127 +1,130 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
-import { Bell } from "lucide-react";
+import { useMemo, useState } from "react";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { toCurrency } from "@/lib/utils";
 
-interface AlertSettingsProps {
-  onSave?: () => void;
+interface AlertSettingsState {
+  monthlyAgentBudgetUsd: number;
+  monthlyWorkspaceBudgetUsd: number;
+  discordWebhookUrl: string | null;
 }
 
-export function AlertSettings({ onSave }: AlertSettingsProps) {
-  const [enabled, setEnabled] = useState(false);
-  const [monthlyBudgetUsd, setMonthlyBudgetUsd] = useState(300);
-  const [discordWebhookUrl, setDiscordWebhookUrl] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+interface AlertsPanelProps {
+  settings: AlertSettingsState;
+  monthlySpendUsd: number;
+  violationCount: number;
+  onSaved: () => Promise<void>;
+}
 
-  useEffect(() => {
-    async function load() {
-      const response = await fetch("/api/alerts", { cache: "no-store" });
-      if (!response.ok) {
-        return;
-      }
+export function AlertSettings({
+  settings,
+  monthlySpendUsd,
+  violationCount,
+  onSaved,
+}: AlertsPanelProps): React.JSX.Element {
+  const [agentBudget, setAgentBudget] = useState(String(settings.monthlyAgentBudgetUsd));
+  const [workspaceBudget, setWorkspaceBudget] = useState(String(settings.monthlyWorkspaceBudgetUsd));
+  const [webhookUrl, setWebhookUrl] = useState(settings.discordWebhookUrl ?? "");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
 
-      const payload = (await response.json()) as {
-        settings: { enabled: boolean; monthlyBudgetUsd: number; hasDiscordWebhook: boolean };
-      };
-
-      setEnabled(payload.settings.enabled);
-      setMonthlyBudgetUsd(payload.settings.monthlyBudgetUsd);
-      if (!payload.settings.hasDiscordWebhook) {
-        setDiscordWebhookUrl("");
-      }
+  const healthTone = useMemo(() => {
+    if (violationCount > 0) {
+      return "text-red-300";
     }
+    if (monthlySpendUsd > settings.monthlyWorkspaceBudgetUsd * 0.8) {
+      return "text-orange-300";
+    }
+    return "text-emerald-300";
+  }, [monthlySpendUsd, settings.monthlyWorkspaceBudgetUsd, violationCount]);
 
-    void load();
-  }, []);
-
-  async function onSubmit(event: FormEvent) {
-    event.preventDefault();
-    setLoading(true);
-    setStatus(null);
+  async function handleSave(): Promise<void> {
+    setSaving(true);
+    setMessage(null);
 
     try {
       const response = await fetch("/api/alerts", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          enabled,
-          monthlyBudgetUsd,
-          discordWebhookUrl
-        })
+          monthlyAgentBudgetUsd: Number(agentBudget),
+          monthlyWorkspaceBudgetUsd: Number(workspaceBudget),
+          discordWebhookUrl: webhookUrl.trim() || null,
+        }),
       });
 
       if (!response.ok) {
         const payload = (await response.json()) as { error?: string };
-        setStatus(payload.error ?? "Unable to save alert settings.");
-      } else {
-        setStatus("Alert settings updated. Discord notifications will trigger on new budget breaches.");
-        onSave?.();
+        throw new Error(payload.error || "Unable to save alert settings");
       }
-    } catch {
-      setStatus("Network error while saving alert settings.");
+
+      setMessage("Alert settings updated and budget checks re-evaluated.");
+      await onSaved();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to save settings");
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Bell className="h-5 w-5 text-[#58a6ff]" />
-          Budget Alerts
-        </CardTitle>
+        <CardTitle>Budget Alert Controls</CardTitle>
         <CardDescription>
-          Trigger Discord alerts when any single agent exceeds a monthly spend ceiling.
+          Set hard spend limits and route runaway warnings straight to Discord.
         </CardDescription>
       </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <label className="flex items-center gap-2 text-sm text-[var(--text)]">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(event) => setEnabled(event.target.checked)}
-              className="h-4 w-4 rounded border border-[var(--border)] bg-[#0d1117]"
-            />
-            Enable Discord budget alerts
-          </label>
-
-          <div className="space-y-1">
-            <Label htmlFor="budget">Monthly budget per agent (USD)</Label>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="agentBudget">Monthly Agent Budget (USD)</Label>
             <Input
-              id="budget"
+              id="agentBudget"
               type="number"
               min={1}
-              step={1}
-              value={monthlyBudgetUsd}
-              onChange={(event) => setMonthlyBudgetUsd(Number(event.target.value))}
-              required
+              value={agentBudget}
+              onChange={(event) => setAgentBudget(event.target.value)}
             />
           </div>
-
-          <div className="space-y-1">
-            <Label htmlFor="discord">Discord Webhook URL</Label>
+          <div className="space-y-2">
+            <Label htmlFor="workspaceBudget">Monthly Workspace Budget (USD)</Label>
             <Input
-              id="discord"
-              type="url"
-              value={discordWebhookUrl}
-              onChange={(event) => setDiscordWebhookUrl(event.target.value)}
-              placeholder="https://discord.com/api/webhooks/..."
+              id="workspaceBudget"
+              type="number"
+              min={1}
+              value={workspaceBudget}
+              onChange={(event) => setWorkspaceBudget(event.target.value)}
             />
           </div>
+        </div>
 
-          <Button type="submit" disabled={loading}>
-            {loading ? "Saving..." : "Save Alert Settings"}
-          </Button>
+        <div className="space-y-2">
+          <Label htmlFor="discordWebhook">Discord Webhook URL</Label>
+          <Input
+            id="discordWebhook"
+            type="url"
+            placeholder="https://discord.com/api/webhooks/..."
+            value={webhookUrl}
+            onChange={(event) => setWebhookUrl(event.target.value)}
+          />
+        </div>
 
-          {status ? <p className="text-sm text-[var(--muted-text)]">{status}</p> : null}
-        </form>
+        <div className={`rounded-md border border-slate-700 bg-[#0f1826] p-3 text-sm ${healthTone}`}>
+          Current month spend: <span className="font-semibold">{toCurrency(monthlySpendUsd)}</span>
+          {violationCount > 0 ? ` · ${violationCount} active violations` : " · no active violations"}
+        </div>
+
+        {message ? <p className="text-sm text-slate-300">{message}</p> : null}
+
+        <Button onClick={handleSave} disabled={saving}>
+          {saving ? "Saving..." : "Save Alert Settings"}
+        </Button>
       </CardContent>
     </Card>
   );

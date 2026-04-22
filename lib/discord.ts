@@ -1,40 +1,42 @@
-export async function sendDiscordBudgetAlert(
-  webhookUrl: string,
-  payload: {
-    agentId: string;
-    month: string;
-    spendUsd: number;
-    budgetUsd: number;
-    providerBreakdown: Record<string, number>;
-  }
-): Promise<void> {
-  const breakdown = Object.entries(payload.providerBreakdown)
-    .sort((a, b) => b[1] - a[1])
-    .map(([provider, value]) => `• ${provider}: $${value.toFixed(2)}`)
-    .join("\n");
+export interface DiscordAlertPayload {
+  title: string;
+  body: string;
+  fields?: Array<{ name: string; value: string }>;
+}
 
-  const content = [
-    `🚨 Agent budget exceeded for ${payload.month}`,
-    `Agent: ${payload.agentId}`,
-    `Spend: $${payload.spendUsd.toFixed(2)} (budget: $${payload.budgetUsd.toFixed(2)})`,
-    "",
-    "Provider breakdown:",
-    breakdown || "• No provider-level breakdown available"
-  ].join("\n");
+export async function sendDiscordAlert(
+  payload: DiscordAlertPayload,
+  overrideWebhookUrl?: string | null,
+): Promise<{ success: boolean; error?: string }> {
+  const webhookUrl = overrideWebhookUrl || process.env.DISCORD_WEBHOOK_URL;
+
+  if (!webhookUrl) {
+    return { success: false, error: "Missing Discord webhook URL" };
+  }
+
+  const embed = {
+    title: payload.title,
+    description: payload.body,
+    color: 0xf97316,
+    timestamp: new Date().toISOString(),
+    fields: payload.fields,
+  };
 
   const response = await fetch(webhookUrl, {
     method: "POST",
     headers: {
-      "content-type": "application/json"
+      "content-type": "application/json",
     },
-    body: JSON.stringify({
-      content,
-      username: "Token Cost Tracker"
-    })
+    body: JSON.stringify({ embeds: [embed] }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Discord webhook failed: ${response.status} ${text}`);
+    return {
+      success: false,
+      error: `Discord webhook failed (${response.status}): ${text}`,
+    };
   }
+
+  return { success: true };
 }

@@ -1,71 +1,114 @@
-import { ProviderConfig, UsageRecord } from "@/lib/types";
-import { estimateCostUsd } from "@/lib/providers/pricing";
-import { makeUsageId, normalizeNumber, parseArrayPayload } from "@/lib/providers/common";
+import { estimateCostUsd } from "@/lib/pricing";
+import type { ProviderSyncOptions, ProviderSyncResult, UsageEvent } from "@/lib/types";
 
-function buildMoltbookUrl(config: ProviderConfig, start: Date, end: Date): string {
-  const base = config.baseUrl?.trim() || "https://api.moltbook.com/v1";
-  const url = new URL(base);
-  url.pathname = `${url.pathname.replace(/\/$/, "")}/usage`;
-  url.searchParams.set("start", start.toISOString());
-  url.searchParams.set("end", end.toISOString());
-  return url.toString();
+function toNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
 }
 
-export async function fetchMoltbookUsage(config: ProviderConfig, start: Date, end: Date): Promise<UsageRecord[]> {
-  if (!config.apiKey || !config.enabled) {
+function parseMoltbookEvents(raw: unknown): UsageEvent[] {
+  if (!raw || typeof raw !== "object") {
     return [];
   }
 
-  const response = await fetch(buildMoltbookUrl(config, start, end), {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`
-    },
-    cache: "no-store"
-  });
+  const payload = raw as Record<string, unknown>;
+  const rows = Array.isArray(payload.data)
+    ? payload.data
+    : Array.isArray(payload.events)
+      ? payload.events
+      : [];
 
-  if (!response.ok) {
-    return [];
-  }
-
-  const payload = await response.json();
-  const rows = parseArrayPayload(payload);
-  const records: UsageRecord[] = [];
+  const events: UsageEvent[] = [];
 
   for (const row of rows) {
     if (!row || typeof row !== "object") {
       continue;
     }
 
-    const raw = row as Record<string, unknown>;
-    const model = String(raw.model ?? "moltbook-model");
-    const inputTokens = normalizeNumber(raw.input_tokens);
-    const outputTokens = normalizeNumber(raw.output_tokens);
-    const totalTokens = normalizeNumber(raw.total_tokens) || inputTokens + outputTokens;
-    const agentId = String(raw.agent_id ?? raw.workflow_id ?? "moltbook-unattributed");
-    const workflow = String(raw.workflow ?? raw.pipeline ?? "unattributed");
-    const timestamp = String(raw.timestamp ?? new Date().toISOString());
-    const maybeCost = normalizeNumber(raw.cost_usd ?? raw.cost);
-    const costUsd = maybeCost > 0 ? maybeCost : estimateCostUsd("moltbook", model, inputTokens, outputTokens);
+    const item = row as Record<string, unknown>;
+    const timestamp =
+      (typeof item.timestamp === "string" && item.timestamp) ||
+      (typeof item.created_at === "string" && item.created_at) ||
+      new Date().toISOString();
 
-    const base = {
-      provider: "moltbook" as const,
+    const model = typeof item.model === "string" ? item.model : "moltbook-default";
+    const workflow = typeof item.workflow === "string" ? item.workflow : "default-workflow";
+    const agent = typeof item.agent === "string" ? item.agent : "unattributed-agent";
+
+    const inputTokens = toNumber(item.input_tokens) || toNumber(item.prompt_tokens);
+    const outputTokens = toNumber(item.output_tokens) || toNumber(item.completion_tokens);
+    const totalTokens = toNumber(item.total_tokens) || inputTokens + outputTokens;
+    const requests = Math.max(1, toNumber(item.requests) || toNumber(item.request_count) || 1);
+    const explicitCost = toNumber(item.cost_usd) || toNumber(item.cost);
+
+    events.push({
+      id: `moltbook-${timestamp}-${model}-${agent}-${workflow}`,
+      timestamp,
+      provider: "moltbook",
       model,
       workflow,
-      agentId,
+      agent,
       inputTokens,
       outputTokens,
       totalTokens,
-      costUsd,
-      timestamp,
-      source: "provider_api" as const
-    };
-
-    records.push({
-      ...base,
-      id: makeUsageId(base)
+      costUsd:
+        explicitCost > 0
+          ? explicitCost
+          : estimateCostUsd("moltbook", model, inputTokens, outputTokens),
+      requests,
+      source: "provider_sync",
     });
   }
 
-  return records;
+  return events;
+}
+
+export async function fetchMoltbookUsage(options: ProviderSyncOptions): Promise<ProviderSyncResult> {
+  const apiKey = process.env.MOLTBOOK_API_KEY;
+  if (!apiKey) {
+    return {
+      provider: "moltbook",
+      events: [],
+      connected: false,
+      error: "Missing MOLTBOOK_API_KEY",
+    };
+  }
+
+  const baseUrl = (process.env.MOLTBOOK_BASE_URL ?? "https://api.moltbook.com").replace(/\/$/, "");
+  const response = await fetch(`${baseUrl}/v1/usage/events`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      start_time: options.start.toISOString(),
+      end_time: options.end.toISOString(),
+    }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    return {
+      provider: "moltbook",
+      events: [],
+      connected: false,
+      error: `Moltbook usage API returned ${response.status}: ${body.slice(0, 240)}`,
+    };
+  }
+
+  const payload = (await response.json()) as unknown;
+
+  return {
+    provider: "moltbook",
+    events: parseMoltbookEvents(payload),
+    connected: true,
+  };
 }

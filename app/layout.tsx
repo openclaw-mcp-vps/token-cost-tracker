@@ -1,43 +1,68 @@
 import type { Metadata } from "next";
-import "./globals.css";
+import { IBM_Plex_Mono, Space_Grotesk, Geist } from "next/font/google";
+
+import "@/app/globals.css";
+import { cn } from "@/lib/utils";
+
+const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+
+const spaceGrotesk = Space_Grotesk({
+  variable: "--font-space-grotesk",
+  subsets: ["latin"],
+  display: "swap",
+});
+
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-plex-mono",
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  display: "swap",
+});
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://token-cost-tracker.app"),
-  title: "Token Cost Tracker | Per-Agent AI Spend Visibility",
+  metadataBase: new URL(process.env.APP_BASE_URL ?? "http://localhost:3000"),
+  title: {
+    default: "Token Cost Tracker",
+    template: "%s | Token Cost Tracker",
+  },
   description:
-    "See exactly what each AI agent cost you yesterday. Track token burn by provider, model, and workflow with budget alerts in Discord.",
+    "See exactly what each AI agent cost you yesterday, broken down per provider, model, and workflow.",
+  applicationName: "Token Cost Tracker",
   keywords: [
-    "AI cost tracking",
-    "token usage dashboard",
-    "agent budget alerts",
-    "OpenAI usage analytics",
-    "Anthropic usage analytics",
-    "Gemini usage analytics"
+    "AI token costs",
+    "agent monitoring",
+    "OpenAI cost tracking",
+    "Anthropic cost dashboard",
+    "MCP tooling",
   ],
   openGraph: {
+    type: "website",
     title: "Token Cost Tracker",
     description:
-      "Track OpenAI, Anthropic, Google, and Moltbook costs per workflow and per agent. Stop runaway token spend before it blows your monthly budget.",
-    url: "https://token-cost-tracker.app",
+      "Real per-agent cost visibility across OpenAI, Anthropic, Google, and Moltbook with budget alerts.",
     siteName: "Token Cost Tracker",
-    type: "website"
+    images: [
+      {
+        url: "/og-image.svg",
+        width: 1200,
+        height: 630,
+        alt: "Token Cost Tracker dashboard preview",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Token Cost Tracker",
     description:
-      "Per-agent AI token cost tracking with provider and workflow breakdowns plus Discord budget alerts."
+      "Prevent silent AI cost blowups with per-agent attribution and Discord alerts.",
+    images: ["/og-image.svg"],
   },
-  robots: {
-    index: true,
-    follow: true
-  }
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>): React.JSX.Element {
   return (
-    <html lang="en">
-      <body className="bg-[var(--background)] text-[var(--text)] antialiased">{children}</body>
+    <html lang="en" className={cn(spaceGrotesk.variable, ibmPlexMono.variable, "font-sans", geist.variable)}>
+      <body className="bg-[#0d1117] text-slate-100 antialiased">{children}</body>
     </html>
   );
 }

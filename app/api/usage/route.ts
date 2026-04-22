@@ -1,157 +1,167 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { format, subDays } from "date-fns";
-import { aggregateUsage, detectRunawayAgents } from "@/lib/analytics";
-import { getProviderConfigFromEnv, readDb, upsertUsageRecords } from "@/lib/database";
-import { evaluateBudgetAlertsAndNotify } from "@/lib/alerts";
-import { pullProviderUsage } from "@/lib/providers";
-import { makeUsageId } from "@/lib/providers/common";
-import { estimateCostUsd } from "@/lib/providers/pricing";
-import { ProviderId, UsageRecord } from "@/lib/types";
-import { toEndOfDay, toStartOfDay } from "@/lib/utils";
 
-const usageIngestSchema = z.object({
+import { filterEventsByDateRange, getUtcDayRange, getYesterdayUtcRange, summarizeUsage } from "@/lib/analytics";
+import { detectBudgetViolations, sendBudgetViolationToDiscord } from "@/lib/alerts";
+import { requirePaidAccess } from "@/lib/api-auth";
+import { addUsageEvents, getAlertSettings, markAlertSent, readStore, setProviderStatus, wasAlertSent } from "@/lib/database";
+import { syncAllProviders } from "@/lib/providers/sync";
+import { PROVIDERS, type ProviderName, type UsageEvent } from "@/lib/types";
+
+export const runtime = "nodejs";
+
+const usageEventSchema = z.object({
+  timestamp: z.string().datetime().optional(),
   provider: z.enum(["openai", "anthropic", "google", "moltbook"]),
   model: z.string().min(1),
   workflow: z.string().min(1),
-  agentId: z.string().min(1),
-  inputTokens: z.number().int().nonnegative(),
-  outputTokens: z.number().int().nonnegative(),
-  timestamp: z.string().datetime().optional(),
-  costUsd: z.number().nonnegative().optional()
+  agent: z.string().min(1),
+  inputTokens: z.number().int().min(0),
+  outputTokens: z.number().int().min(0),
+  totalTokens: z.number().int().min(0).optional(),
+  costUsd: z.number().min(0),
+  requests: z.number().int().min(1).optional(),
 });
 
-function parseDateParam(raw: string | null, fallback: Date): Date {
-  if (!raw) {
-    return fallback;
+const usagePayloadSchema = z.object({
+  events: z.array(usageEventSchema).min(1),
+});
+
+const providerEnvMap: Record<ProviderName, string> = {
+  openai: "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  google: "GOOGLE_API_KEY",
+  moltbook: "MOLTBOOK_API_KEY",
+};
+
+async function sendAnyNewViolations(events: UsageEvent[]): Promise<number> {
+  const settings = await getAlertSettings();
+  const violations = detectBudgetViolations(events, settings);
+  let sent = 0;
+
+  for (const violation of violations) {
+    if (await wasAlertSent(violation.key)) {
+      continue;
+    }
+
+    const result = await sendBudgetViolationToDiscord(violation, settings.discordWebhookUrl);
+    if (result.success) {
+      await markAlertSent(violation.key);
+      sent += 1;
+    }
   }
 
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) {
-    return fallback;
-  }
-
-  return parsed;
+  return sent;
 }
 
-async function pullAllProviderData(start: Date, end: Date): Promise<UsageRecord[]> {
-  const db = await readDb();
+async function syncYesterdayProviders(): Promise<{ addedEvents: number }> {
+  const { start, end } = getYesterdayUtcRange();
+  const results = await syncAllProviders(start, end);
+  const now = new Date().toISOString();
 
-  const providerIds: ProviderId[] = ["openai", "anthropic", "google", "moltbook"];
-  const jobs = providerIds.map(async (provider) => {
-    const configured = db.providers[provider] ?? getProviderConfigFromEnv(provider);
-    if (!configured || !configured.enabled) {
-      return [];
-    }
+  const events = results.flatMap((result) => result.events);
+  const insertResult = await addUsageEvents(events);
 
-    try {
-      return await pullProviderUsage(provider, configured, start, end);
-    } catch {
-      return [];
-    }
-  });
+  for (const provider of PROVIDERS) {
+    const result = results.find((entry) => entry.provider === provider);
+    const configured = Boolean(process.env[providerEnvMap[provider]]);
 
-  const settled = await Promise.all(jobs);
-  return settled.flat();
-}
-
-export async function GET(request: NextRequest) {
-  const start = toStartOfDay(parseDateParam(request.nextUrl.searchParams.get("start"), subDays(new Date(), 30)));
-  const end = toEndOfDay(parseDateParam(request.nextUrl.searchParams.get("end"), new Date()));
-  const includeFreshPull = request.nextUrl.searchParams.get("sync") !== "0";
-
-  if (includeFreshPull) {
-    const freshRecords = await pullAllProviderData(start, end);
-    await upsertUsageRecords(freshRecords);
+    await setProviderStatus(provider, {
+      configured,
+      connected: Boolean(result?.connected),
+      lastSyncAt: now,
+      lastError: result?.error ?? null,
+    });
   }
 
-  const providerFilter = request.nextUrl.searchParams.get("provider");
-  const agentFilter = request.nextUrl.searchParams.get("agentId");
-  const workflowFilter = request.nextUrl.searchParams.get("workflow");
+  return { addedEvents: insertResult.added };
+}
 
-  const db = await readDb();
-  const filtered = db.usageRecords.filter((record) => {
-    const ts = new Date(record.timestamp).getTime();
-    if (Number.isNaN(ts)) {
-      return false;
-    }
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  const forbidden = requirePaidAccess(request);
+  if (forbidden) {
+    return forbidden;
+  }
 
-    if (ts < start.getTime() || ts > end.getTime()) {
-      return false;
-    }
+  const sync = request.nextUrl.searchParams.get("sync") === "1";
+  if (sync) {
+    await syncYesterdayProviders();
+  }
 
-    if (providerFilter && record.provider !== providerFilter) {
-      return false;
-    }
+  const days = Number(request.nextUrl.searchParams.get("days") ?? "30");
+  const boundedDays = Number.isFinite(days) ? Math.max(1, Math.min(90, Math.floor(days))) : 30;
 
-    if (agentFilter && record.agentId !== agentFilter) {
-      return false;
-    }
+  const store = await readStore();
+  const range = getUtcDayRange(boundedDays);
+  const rangeEvents = filterEventsByDateRange(store.usageEvents, range.start, range.end);
+  const summary = summarizeUsage(rangeEvents);
 
-    if (workflowFilter && record.workflow !== workflowFilter) {
-      return false;
-    }
-
-    return true;
-  });
-
-  const summary = aggregateUsage(filtered);
-  const runawayAgents = detectRunawayAgents(filtered);
-
-  const breaches = await evaluateBudgetAlertsAndNotify();
+  const yesterday = getYesterdayUtcRange();
+  const yesterdayEvents = filterEventsByDateRange(store.usageEvents, yesterday.start, yesterday.end);
+  const yesterdaySummary = summarizeUsage(yesterdayEvents);
 
   return NextResponse.json({
-    period: {
-      start: start.toISOString(),
-      end: end.toISOString()
+    range: {
+      start: range.start.toISOString(),
+      end: range.end.toISOString(),
+      days: boundedDays,
     },
     summary,
-    runawayAgents,
-    budgetBreaches: breaches,
-    records: filtered.slice(0, 200)
+    yesterday: {
+      date: yesterday.start.toISOString().slice(0, 10),
+      costUsd: yesterdaySummary.totals.costUsd,
+      totalTokens: yesterdaySummary.totals.totalTokens,
+    },
   });
 }
 
-export async function POST(request: NextRequest) {
-  const payload = await request.json();
-  const rows = Array.isArray(payload) ? payload : [payload];
-
-  const parsed = z.array(usageIngestSchema).safeParse(rows);
-
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid usage payload", details: parsed.error.flatten() }, { status: 400 });
+export async function POST(request: NextRequest): Promise<NextResponse> {
+  const forbidden = requirePaidAccess(request);
+  if (forbidden) {
+    return forbidden;
   }
 
-  const now = new Date().toISOString();
-  const records: UsageRecord[] = parsed.data.map((row) => {
-    const totalTokens = row.inputTokens + row.outputTokens;
-    const costUsd = row.costUsd ?? estimateCostUsd(row.provider, row.model, row.inputTokens, row.outputTokens);
-    const base = {
-      provider: row.provider,
-      model: row.model,
-      workflow: row.workflow,
-      agentId: row.agentId,
-      inputTokens: row.inputTokens,
-      outputTokens: row.outputTokens,
-      totalTokens,
-      costUsd,
-      timestamp: row.timestamp ?? now,
-      source: "manual" as const
-    };
+  const json = (await request.json()) as unknown;
+  const parsed = usagePayloadSchema.safeParse(json);
+
+  if (!parsed.success) {
+    return NextResponse.json(
+      {
+        error: "Invalid usage payload",
+        details: parsed.error.flatten(),
+      },
+      { status: 400 },
+    );
+  }
+
+  const incoming: UsageEvent[] = parsed.data.events.map((event, index) => {
+    const timestamp = event.timestamp ?? new Date().toISOString();
+    const totalTokens = event.totalTokens ?? event.inputTokens + event.outputTokens;
+    const requests = event.requests ?? 1;
 
     return {
-      ...base,
-      id: makeUsageId(base)
+      id: `${event.provider}-${timestamp}-${event.agent}-${event.workflow}-${event.model}-${index}`,
+      timestamp,
+      provider: event.provider,
+      model: event.model,
+      workflow: event.workflow,
+      agent: event.agent,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      totalTokens,
+      costUsd: event.costUsd,
+      requests,
+      source: "agent_ingest",
     };
   });
 
-  await upsertUsageRecords(records);
-  const breaches = await evaluateBudgetAlertsAndNotify();
+  const insertResult = await addUsageEvents(incoming);
+  const store = await readStore();
+  const alertsSent = await sendAnyNewViolations(store.usageEvents);
 
   return NextResponse.json({
-    success: true,
-    inserted: records.length,
-    month: format(new Date(), "yyyy-MM"),
-    budgetBreaches: breaches
+    received: parsed.data.events.length,
+    added: insertResult.added,
+    alertsSent,
   });
 }

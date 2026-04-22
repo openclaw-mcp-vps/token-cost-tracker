@@ -1,127 +1,194 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { promises as fs } from "node:fs";
 import path from "node:path";
-import { AppDatabase, ProviderId, UsageRecord } from "@/lib/types";
 
-const DB_DIR = path.join(process.cwd(), "data");
-const DB_FILE = path.join(DB_DIR, "store.json");
+import { PROVIDERS, type AlertSettings, type DataStore, type Entitlement, type ProviderName, type ProviderStatus, type UsageEvent } from "@/lib/types";
 
-const defaultDb = (): AppDatabase => ({
-  usageRecords: [],
-  providers: {
-    openai: null,
-    anthropic: null,
-    google: null,
-    moltbook: null
-  },
-  alertSettings: {
-    enabled: false,
-    monthlyBudgetUsd: 100,
-    notifiedAgentMonths: []
-  },
-  entitlements: []
-});
+const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_FILE = path.join(DATA_DIR, "store.json");
 
-async function ensureDb(): Promise<void> {
-  await mkdir(DB_DIR, { recursive: true });
+let writeQueue: Promise<unknown> = Promise.resolve();
 
-  try {
-    await readFile(DB_FILE, "utf-8");
-  } catch {
-    await writeFile(DB_FILE, JSON.stringify(defaultDb(), null, 2), "utf-8");
-  }
-}
-
-export async function readDb(): Promise<AppDatabase> {
-  await ensureDb();
-  const raw = await readFile(DB_FILE, "utf-8");
-  const parsed = JSON.parse(raw) as AppDatabase;
-
+function defaultProviderStatus(provider: ProviderName): ProviderStatus {
   return {
-    ...defaultDb(),
-    ...parsed,
-    providers: {
-      ...defaultDb().providers,
-      ...(parsed.providers ?? {})
-    }
+    provider,
+    configured: false,
+    connected: false,
+    lastSyncAt: null,
+    lastError: null,
   };
 }
 
-let writeQueue = Promise.resolve();
+function createDefaultStore(): DataStore {
+  const providerStatus = Object.fromEntries(
+    PROVIDERS.map((provider) => [provider, defaultProviderStatus(provider)]),
+  ) as Record<ProviderName, ProviderStatus>;
 
-export async function writeDb(updater: (db: AppDatabase) => AppDatabase | Promise<AppDatabase>): Promise<AppDatabase> {
-  writeQueue = writeQueue.then(async () => {
-    const current = await readDb();
-    const next = await updater(current);
-    await writeFile(DB_FILE, JSON.stringify(next, null, 2), "utf-8");
-  });
-
-  await writeQueue;
-  return readDb();
+  return {
+    usageEvents: [],
+    providerStatus,
+    alertSettings: {
+      monthlyAgentBudgetUsd: 250,
+      monthlyWorkspaceBudgetUsd: 1500,
+      discordWebhookUrl: process.env.DISCORD_WEBHOOK_URL || null,
+    },
+    entitlements: [],
+    sentAlerts: [],
+  };
 }
 
-export async function upsertUsageRecords(records: UsageRecord[]): Promise<void> {
-  if (records.length === 0) {
-    return;
+async function ensureStoreFile(): Promise<void> {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+
+  try {
+    await fs.access(DATA_FILE);
+  } catch {
+    await fs.writeFile(DATA_FILE, `${JSON.stringify(createDefaultStore(), null, 2)}\n`, "utf8");
+  }
+}
+
+function normalizeStore(store: DataStore): DataStore {
+  const normalized = createDefaultStore();
+
+  return {
+    ...normalized,
+    ...store,
+    providerStatus: {
+      ...normalized.providerStatus,
+      ...store.providerStatus,
+    },
+    alertSettings: {
+      ...normalized.alertSettings,
+      ...store.alertSettings,
+    },
+    usageEvents: store.usageEvents ?? [],
+    entitlements: store.entitlements ?? [],
+    sentAlerts: store.sentAlerts ?? [],
+  };
+}
+
+export async function readStore(): Promise<DataStore> {
+  await ensureStoreFile();
+  const raw = await fs.readFile(DATA_FILE, "utf8");
+  const parsed = JSON.parse(raw) as DataStore;
+  return normalizeStore(parsed);
+}
+
+async function writeStore(store: DataStore): Promise<void> {
+  await fs.writeFile(DATA_FILE, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+}
+
+export async function updateStore(
+  mutator: (store: DataStore) => void | Promise<void>,
+): Promise<DataStore> {
+  const runner = writeQueue.then(async () => {
+    const store = await readStore();
+    await mutator(store);
+    await writeStore(store);
+    return store;
+  });
+
+  writeQueue = runner.then(
+    () => undefined,
+    () => undefined,
+  );
+
+  return runner;
+}
+
+export async function addUsageEvents(events: UsageEvent[]): Promise<{ added: number; total: number }> {
+  if (events.length === 0) {
+    const store = await readStore();
+    return { added: 0, total: store.usageEvents.length };
   }
 
-  await writeDb((db) => {
-    const existing = new Set(db.usageRecords.map((r) => r.id));
-    const merged = [...db.usageRecords];
-
-    for (const record of records) {
-      if (!existing.has(record.id)) {
-        existing.add(record.id);
-        merged.push(record);
+  let added = 0;
+  const store = await updateStore((draft) => {
+    const ids = new Set(draft.usageEvents.map((event) => event.id));
+    for (const event of events) {
+      if (!ids.has(event.id)) {
+        draft.usageEvents.push(event);
+        ids.add(event.id);
+        added += 1;
       }
     }
 
-    merged.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+    draft.usageEvents.sort((a, b) => (a.timestamp > b.timestamp ? -1 : 1));
+  });
 
-    return {
-      ...db,
-      usageRecords: merged.slice(0, 20000)
+  return {
+    added,
+    total: store.usageEvents.length,
+  };
+}
+
+export async function setProviderStatus(
+  provider: ProviderName,
+  patch: Partial<Omit<ProviderStatus, "provider">>,
+): Promise<ProviderStatus> {
+  const store = await updateStore((draft) => {
+    draft.providerStatus[provider] = {
+      ...defaultProviderStatus(provider),
+      ...draft.providerStatus[provider],
+      ...patch,
+      provider,
     };
+  });
+
+  return store.providerStatus[provider];
+}
+
+export async function listProviderStatus(): Promise<ProviderStatus[]> {
+  const store = await readStore();
+  return PROVIDERS.map((provider) => store.providerStatus[provider]);
+}
+
+export async function getAlertSettings(): Promise<AlertSettings> {
+  const store = await readStore();
+  return store.alertSettings;
+}
+
+export async function saveAlertSettings(patch: Partial<AlertSettings>): Promise<AlertSettings> {
+  const store = await updateStore((draft) => {
+    draft.alertSettings = {
+      ...draft.alertSettings,
+      ...patch,
+    };
+  });
+
+  return store.alertSettings;
+}
+
+export async function addEntitlement(record: Entitlement): Promise<void> {
+  await updateStore((draft) => {
+    const exists = draft.entitlements.some(
+      (entry) =>
+        entry.email === record.email &&
+        entry.checkoutSessionId === record.checkoutSessionId,
+    );
+
+    if (!exists) {
+      draft.entitlements.push(record);
+    }
   });
 }
 
-export function getProviderConfigFromEnv(provider: ProviderId) {
-  if (provider === "openai" && process.env.OPENAI_API_KEY) {
-    return {
-      provider,
-      apiKey: process.env.OPENAI_API_KEY,
-      enabled: true,
-      organizationId: process.env.OPENAI_ORG_ID,
-      updatedAt: new Date().toISOString()
-    };
-  }
+export async function hasEntitlement(email: string): Promise<boolean> {
+  const normalized = email.trim().toLowerCase();
+  const store = await readStore();
+  return store.entitlements.some((entry) => entry.email.trim().toLowerCase() === normalized);
+}
 
-  if (provider === "anthropic" && process.env.ANTHROPIC_API_KEY) {
-    return {
-      provider,
-      apiKey: process.env.ANTHROPIC_API_KEY,
-      enabled: true,
-      updatedAt: new Date().toISOString()
-    };
-  }
+export async function markAlertSent(key: string): Promise<boolean> {
+  const store = await updateStore((draft) => {
+    if (!draft.sentAlerts.includes(key)) {
+      draft.sentAlerts.push(key);
+    }
+  });
 
-  if (provider === "google" && process.env.GOOGLE_API_KEY) {
-    return {
-      provider,
-      apiKey: process.env.GOOGLE_API_KEY,
-      enabled: true,
-      updatedAt: new Date().toISOString()
-    };
-  }
+  return store.sentAlerts.includes(key);
+}
 
-  if (provider === "moltbook" && process.env.MOLTBOOK_API_KEY) {
-    return {
-      provider,
-      apiKey: process.env.MOLTBOOK_API_KEY,
-      enabled: true,
-      baseUrl: process.env.MOLTBOOK_BASE_URL,
-      updatedAt: new Date().toISOString()
-    };
-  }
-
-  return null;
+export async function wasAlertSent(key: string): Promise<boolean> {
+  const store = await readStore();
+  return store.sentAlerts.includes(key);
 }

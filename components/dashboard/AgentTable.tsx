@@ -1,52 +1,75 @@
-import { Badge } from "@/components/ui/badge";
-import { asCurrency } from "@/lib/format";
-import type { AgentRollup } from "@/lib/usage";
+"use client";
 
-interface AgentTableProps {
-  rows: AgentRollup[];
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { formatInt, toCurrency } from "@/lib/utils";
+
+interface AgentRow {
+  agent: string;
+  workflow: string;
+  provider: string;
+  model: string;
+  costUsd: number;
+  totalTokens: number;
+  requests: number;
 }
 
-export function AgentTable({ rows }: AgentTableProps) {
+interface AgentTableProps {
+  rows: AgentRow[];
+  budgetLimitUsd: number;
+}
+
+export function AgentTable({ rows, budgetLimitUsd }: AgentTableProps): React.JSX.Element {
   return (
-    <div className="card-surface overflow-hidden">
-      <div className="p-5 border-b border-[var(--border)]">
-        <h3 className="text-lg font-semibold">Per-Agent Cost Attribution</h3>
-        <p className="text-sm text-muted mt-1">Provider, model, and workflow-level breakdown for each agent.</p>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-muted border-b border-[var(--border)]">
-              <th className="p-3">Agent</th>
-              <th className="p-3">Provider</th>
-              <th className="p-3">Model</th>
-              <th className="p-3">Workflow</th>
-              <th className="p-3">Input</th>
-              <th className="p-3">Output</th>
-              <th className="p-3">Month Cost</th>
-              <th className="p-3">Budget</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={`${row.agentName}-${row.provider}-${row.workflow}-${row.model}`} className="border-b border-[var(--border)]/60">
-                <td className="p-3 font-medium">{row.agentName}</td>
-                <td className="p-3">{row.provider}</td>
-                <td className="p-3">{row.model}</td>
-                <td className="p-3">{row.workflow}</td>
-                <td className="p-3">{row.inputTokens.toLocaleString()}</td>
-                <td className="p-3">{row.outputTokens.toLocaleString()}</td>
-                <td className="p-3 font-medium">{asCurrency(row.totalCostUsd)}</td>
-                <td className="p-3">
-                  <Badge variant={row.overBudget ? "danger" : row.budgetUsedPct > 80 ? "warning" : "default"}>
-                    {Math.round(row.budgetUsedPct)}% of {asCurrency(row.monthlyBudgetUsd)}
-                  </Badge>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>Per-Agent Cost Breakdown</CardTitle>
+        <CardDescription>
+          Pinpoint which workflows are efficient and which ones are silently draining budget.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Agent</TableHead>
+              <TableHead>Workflow</TableHead>
+              <TableHead>Provider / Model</TableHead>
+              <TableHead className="text-right">Requests</TableHead>
+              <TableHead className="text-right">Tokens</TableHead>
+              <TableHead className="text-right">Cost</TableHead>
+              <TableHead>Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => {
+              const isRunaway = row.costUsd > budgetLimitUsd;
+
+              return (
+                <TableRow key={`${row.agent}-${row.workflow}-${row.provider}-${row.model}`}>
+                  <TableCell className="font-medium text-slate-100">{row.agent}</TableCell>
+                  <TableCell>{row.workflow}</TableCell>
+                  <TableCell>
+                    <div className="text-slate-100">{row.provider}</div>
+                    <div className="text-xs text-slate-400">{row.model}</div>
+                  </TableCell>
+                  <TableCell className="text-right">{formatInt(row.requests)}</TableCell>
+                  <TableCell className="text-right">{formatInt(row.totalTokens)}</TableCell>
+                  <TableCell className="text-right font-semibold">{toCurrency(row.costUsd)}</TableCell>
+                  <TableCell>
+                    {isRunaway ? (
+                      <Badge variant="danger">Runaway</Badge>
+                    ) : (
+                      <Badge variant="success">Healthy</Badge>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }
